@@ -41,9 +41,9 @@ from playwright.sync_api import Locator, Page, sync_playwright
 
 from config import (
     ADMIN_BASE,
+    AGE_GATE_BUTTON_TEXTS,
     DEFAULT_AFID,
     DEFAULT_VIEWPORT,
-    DISMISS_BUTTON_TEXTS,
     DISMISS_FALLBACK_KEYWORDS,
     NICHE_IDS,
     NICHE_LP_NUMBERS,
@@ -63,14 +63,36 @@ SUCCESS_TEXT_RE = re.compile(r"Successfully (added|edited|created|inserted)", re
 def dismiss_overlays(page: Page) -> None:
     """Best-effort odbavení cookie lišty / age gate. Neselže, když nic nenajde.
 
-    Dva průchody seznamem textů, protože dvoukrokové cookie bannery ("Let me
-    choose"/"Déjame elegir" -> teprve pak se objeví "Reject all"/"Rechazar
-    todas") by v jediném průchodu mohly být odbavené jen zpola, pokud tlačítko
-    druhého kroku vyjde v DISMISS_BUTTON_TEXTS dřív než tlačítko prvního kroku.
+    Cookie lišta se odbavuje obecně, bez ohledu na jazyk: najde se libovolný
+    dialog, který zmiňuje slovo "cookie"/"cookies" (to se ve valné většině
+    jazyků nepřekládá), a klikne se na první tlačítko/odkaz v něm. Nezáleží,
+    jestli je to "accept" nebo "reject" - jde o jednorázový headless kontext
+    bez reálného návštěvníka, takže na konkrétní volbě souhlasu nezáleží,
+    důležité je jen dostat čistý screenshot.
+
+    Age gate (potvrzení "jsem 18+") se řeší samostatně, přesným seznamem
+    textů (AGE_GATE_BUTTON_TEXTS) - špatná volba by tam znamenala odchod na
+    "jsem nezletilý" stránku, ne jen jinak vypadající lištu, takže obecná
+    detekce podle klíčového slova by tu nebyla bezpečná.
     """
+    try:
+        cookie_dialog = page.locator('[role="dialog"], [role="alertdialog"]').filter(
+            has_text=re.compile("cookie", re.IGNORECASE)
+        ).first
+        if cookie_dialog.count() > 0:
+            btn = cookie_dialog.locator("button, [role='button'], a[href]").first
+            if btn.count() > 0:
+                btn.click(timeout=2000)
+                page.wait_for_timeout(300)
+    except Exception:
+        pass
+
+    # Dva průchody seznamem textů, protože dvoukroké age gate varianty (kdyby
+    # nějaká byla) by v jediném průchodu mohly být odbavené jen zpola, pokud
+    # tlačítko druhého kroku vyjde v AGE_GATE_BUTTON_TEXTS dřív než první.
     dismissed_any = False
     for _ in range(2):
-        for text in DISMISS_BUTTON_TEXTS:
+        for text in AGE_GATE_BUTTON_TEXTS:
             try:
                 btn = page.get_by_text(text, exact=False)
                 if btn.count() > 0:
@@ -118,9 +140,11 @@ def screenshot_lp(browser, domain: str, path: str, afid: str, viewport: dict) ->
 
 def fetch_offer_title_from_admin(admin_page: Page, offer_id: str) -> str:
     """Fallback, když offer není v lokálním data/offers.json - zkusí vytáhnout
-    popisek offeru přímo z hlavní edit stránky offeru v adminu."""
+    popisek offeru přímo z hlavní edit stránky offeru v adminu. Je to text
+    v <strong> uvnitř .navbar-brand v hlavičce obsahu stránky (ne <h1>, ten
+    má jen obecný nadpis "Offer offer edit")."""
     admin_page.goto(f"{ADMIN_BASE}/en/admin/offer/edit/{offer_id}?locale=en", wait_until="networkidle")
-    return admin_page.locator("h1").first.inner_text()
+    return admin_page.locator("section.content nav.navbar a.navbar-brand strong").first.inner_text()
 
 
 def get_landing_rows(admin_page: Page, offer_id: str) -> list[dict]:
@@ -322,7 +346,8 @@ def main() -> None:
                     continue
 
                 action = "edit" if existing else "add"
-                print(f"[{label}] {action} -> {preview_url}")
+                dry_run_tag = "[DRY RUN] " if args.dry_run else ""
+                print(f"{dry_run_tag}[{label}] {action} -> {preview_url}")
                 screenshot_path = screenshot_lp(browser, domain, path, args.afid, viewport)
                 print(f"  screenshot: {screenshot_path}")
 
@@ -363,7 +388,8 @@ def main() -> None:
                 if "paus" in row["status"].lower():
                     continue
                 label = f"LP{lp_number} (mimo platnou sadu {args.niche})"
-                print(f"[{label}] [{row['id']}] {row['title']} -> pause")
+                dry_run_tag = "[DRY RUN] " if args.dry_run else ""
+                print(f"{dry_run_tag}[{label}] [{row['id']}] {row['title']} -> pause")
                 if args.dry_run:
                     paused.append(lp_number)
                     continue
@@ -379,9 +405,10 @@ def main() -> None:
 
         browser.close()
 
+    dry_run_note = " (DRY RUN - nic z tohoto se ve skutečnosti nezapsalo do administrace)" if args.dry_run else ""
     print(
         f"\nHotovo. Vytvořeno: {len(created)}, upraveno: {len(updated)}, "
-        f"pozastaveno: {len(paused)}, beze změny: {len(skipped)}, chyby: {len(failed)}"
+        f"pozastaveno: {len(paused)}, beze změny: {len(skipped)}, chyby: {len(failed)}{dry_run_note}"
     )
     if failed:
         print("LP s chybou:", ", ".join(str(n) for n in failed))

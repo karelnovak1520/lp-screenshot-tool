@@ -39,28 +39,31 @@ NICHE_IDS: dict[str, str | None] = {
 # opraví na "4").
 LP_FORM_SEGMENT = "4"
 
-# Texty tlačítek pro odbavení cookie lišty / věkové brány (self-declaration),
+# Texty tlačítek pro odbavení věkové brány (self-declaration "jsem 18+"),
 # ve všech jazycích, na které jsme dosud narazili. Zkouší se v tomto pořadí,
 # každý match se klikne (best effort - když text nenajde, jde dál).
-DISMISS_BUTTON_TEXTS = [
-    # cookie - "odmítnout vše" varianty
-    "Alle ablehnen",
-    "Rifiuta tutto",
-    "Odmítnout vše",
-    "Reject all",
-    "Zamietnuť všetko",
-    # cookie - dvoukrokové varianty ("Let me choose" -> "Reject all")
-    "Let me choose",
-    "Manage preferences",
-    "Déjame elegir",
-    "Rechazar todas",
-    # age gate - self-declaration "jsem 18+"
-    "Ho 18 anni o più",
-    "Tengo 18 años o más",
-    "Je mi 18 let nebo více",
-    "Som starší ako 18 rokov",
-    "I am 18 or older",
-    "Ich bin 18 oder älter",
+#
+# Cookie lišty se NEŘEŠÍ přes tenhle seznam - ty se odbavují obecně podle
+# zmínky slova "cookie" (viz dismiss_overlays() v lp_tool.py), protože tam
+# nezáleží na volbě accept/reject a udržovat překlady do desítek jazyků by
+# byla zbytečná práce navíc. U age gate ale špatná volba znamená odchod na
+# "jsem nezletilý" stránku, takže tam přesný seznam zůstává.
+AGE_GATE_BUTTON_TEXTS = [
+    "Ho 18 anni o più",  # IT
+    "Tengo 18 años o más",  # ES
+    "Je mi 18 let nebo více",  # CS
+    "Som starší ako 18 rokov",  # SK
+    "I am 18 or older",  # EN
+    "Ich bin 18 oder älter",  # DE
+    "J'ai 18 ans ou plus",  # FR
+    "Tenho 18 anos ou mais",  # PT/BR
+    "Ik ben 18 jaar of ouder",  # NL
+    "Mam 18 lat lub więcej",  # PL
+    "Am 18 ani sau mai mult",  # RO
+    "18 éves vagy idősebb vagyok",  # HU
+    "Jag är 18 år eller äldre",  # SV
+    "18 yaşında veya daha büyüğüm",  # TR
+    "Мне 18 лет или больше",  # RU
 ]
 
 # Fallback, když se nenajde žádný z přesných textů výše (zadání sekce 10) -
@@ -94,8 +97,11 @@ def normalize_domain(domain: str) -> str:
 
 
 def domain_from_offer_title(title: str) -> str | None:
-    """Doména je první segment v popisku offeru, např.
-    "sexkontakt.com - GERMANY - ADULT - REV" -> "www.sexkontakt.com"
+    """Doména je jeden ze segmentů popisku offeru oddělených " - ", např.
+    "sexkontakt.com - GERMANY - ADULT - REV" -> "www.sexkontakt.com". Obvykle
+    je první, ale u testovacích offerů bývá před ní ještě prefix "TEST"
+    (např. "TEST - zralalaska.cz - SENIORS 50+ - ..."), takže se prochází
+    segmenty popořadě a vrací první, který vypadá jako doména.
 
     Ne všechny offery mají v titulku doménu - starší ("... RevShare old
     System") mívají jen lidský název brandu (např. "Sexkontakt DE"). V tom
@@ -103,11 +109,11 @@ def domain_from_offer_title(title: str) -> str | None:
     """
     # Některé tituly v offers.json mají před pomlčkou nedělitelnou mezeru
     # (\xa0) místo normální - bez normalizace by split(" - ") selhal.
-    domain = title.replace("\xa0", " ").split(" - ")[0].strip()
-    domain = re.sub(r"^https?://", "", domain)
-    if not looks_like_domain(domain):
-        return None
-    return normalize_domain(domain)
+    for segment in title.replace("\xa0", " ").split(" - "):
+        domain = re.sub(r"^https?://", "", segment.strip())
+        if looks_like_domain(domain):
+            return normalize_domain(domain)
+    return None
 
 
 def get_offer_title(offer_id: str) -> str | None:
