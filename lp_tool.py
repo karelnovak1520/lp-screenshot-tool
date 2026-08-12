@@ -113,57 +113,80 @@ def _click_hinted(scope, hints: list[str]) -> bool:
     return False
 
 
-def dismiss_overlays(page: Page) -> None:
-    """Best-effort odbavení cookie lišty / age gate. Neselže, když nic nenajde.
+def _dismiss_cookie_banner(page: Page, timeout_ms: int = 4000) -> bool:
+    """Zkusí odmítnout cookie lištu. Vrací True, pokud se na něco kliklo.
 
-    Cookie lišta se odmítá cíleně, bez ohledu na jazyk webu: id/class/data-cc
-    atributy tlačítek jsou v kódu vždy anglicky (např. "s-rall-bn" pro
-    "Odmítnout vše"), i když zobrazený text je český/německý/apod. Nejdřív
-    se zkusí přímé "reject" tlačítko; pokud banner nabízí jen "accept" +
+    Cíleně se odmítá, bez ohledu na jazyk webu: id/class/data-cc atributy
+    tlačítek jsou v kódu vždy anglicky (např. "s-rall-bn" pro "Odmítnout
+    vše"), i když zobrazený text je český/německý/apod. Nejdřív se zkusí
+    přímé "reject" tlačítko; pokud banner nabízí jen "accept" +
     "nastavení/vybrat" (dvoukrokové varianty, viz zralalaska.cz), otevře se
     nejdřív ono a reject se zkusí znovu v nově otevřeném panelu. Pokud se
     reject nikde nenajde, NEKLIKÁ se na "accept" jako náhradu - lepší
-    zůstat s bannerem na screenshotu, než omylem odsouhlasit cookies.
+    zůstat s bannerem na screenshotu, než omylem odsouhlasit cookies."""
+    dialog = _find_visible_cookie_dialog(page, timeout_ms=timeout_ms)
+    if not dialog:
+        return False
+    if _click_hinted(dialog, CONSENT_REJECT_HINTS):
+        return True
+    if _click_hinted(dialog, CONSENT_MANAGE_HINTS):
+        page.wait_for_timeout(400)
+        dialog2 = _find_visible_cookie_dialog(page, timeout_ms=1500)
+        if dialog2:
+            return _click_hinted(dialog2, CONSENT_REJECT_HINTS)
+    return False
 
-    Age gate (potvrzení "jsem 18+") se řeší samostatně, přesným seznamem
-    textů (AGE_GATE_BUTTON_TEXTS) - špatná volba by tam znamenala odchod na
-    "jsem nezletilý" stránku, ne jen jinak vypadající lištu, takže tahle
-    obecná id/class detekce by tu nebyla bezpečná (výběr "jsem nezletilý" by
-    klidně mohl mít id obsahující něco jako "no"/"deny" taky).
+
+def _dismiss_age_gate(page: Page) -> bool:
+    """Zkusí kliknout na self-declaration "jsem 18+" tlačítko podle přesného
+    seznamu textů (AGE_GATE_BUTTON_TEXTS). Vrací True, pokud se na něco
+    kliklo.
+
+    Přesný seznam textů, ne obecná id/class detekce jako u cookie lišty -
+    špatná volba by tu znamenala odchod na "jsem nezletilý" stránku, ne jen
+    jinak vypadající lištu (výběr "jsem nezletilý" by klidně mohl mít id
+    obsahující něco jako "no"/"deny" taky, takže obecná detekce podle
+    klíčového slova by tu nebyla bezpečná)."""
+    clicked = False
+    for text in AGE_GATE_BUTTON_TEXTS:
+        try:
+            btn = page.get_by_text(text, exact=False)
+            if btn.count() > 0:
+                btn.first.click(timeout=1500)
+                clicked = True
+        except Exception:
+            continue
+    return clicked
+
+
+def dismiss_overlays(page: Page) -> None:
+    """Best-effort odbavení age gate / cookie lišty. Neselže, když nic nenajde.
+
+    Age gate a cookie lišta se běžně objevují JEDNA PŘES DRUHOU (typicky age
+    gate navrchu, cookie lišta pod ní) a ne ve vždy stejném pořadí. Zkoušet
+    obě jen jednou v pevném pořadí ("nejdřív cookie, pak age gate") by
+    znamenalo, že klik na cookie lištu zakrytou age gate selže a cookie
+    lišta se pak už znovu nezkusí, i když by po odbavení age gate byla
+    volně dostupná. Proto se obě zkoušejí v cyklu, dokud aspoň jedna z nich
+    v daném kole něco udělá.
     """
-    try:
-        dialog = _find_visible_cookie_dialog(page)
-        if dialog and not _click_hinted(dialog, CONSENT_REJECT_HINTS):
-            if _click_hinted(dialog, CONSENT_MANAGE_HINTS):
-                page.wait_for_timeout(400)
-                dialog2 = _find_visible_cookie_dialog(page)
-                if dialog2:
-                    _click_hinted(dialog2, CONSENT_REJECT_HINTS)
-        page.wait_for_timeout(300)
-    except Exception:
-        pass
-
-    # Dva průchody seznamem textů, protože dvoukroké age gate varianty (kdyby
-    # nějaká byla) by v jediném průchodu mohly být odbavené jen zpola, pokud
-    # tlačítko druhého kroku vyjde v AGE_GATE_BUTTON_TEXTS dřív než první.
     dismissed_any = False
-    for _ in range(2):
-        for text in AGE_GATE_BUTTON_TEXTS:
-            try:
-                btn = page.get_by_text(text, exact=False)
-                if btn.count() > 0:
-                    btn.first.click(timeout=2000)
-                    page.wait_for_timeout(300)
-                    dismissed_any = True
-            except Exception:
-                continue
+    for i in range(3):
+        acted_age = _dismiss_age_gate(page)
+        page.wait_for_timeout(200)
+        acted_cookie = _dismiss_cookie_banner(page, timeout_ms=4000 if i == 0 else 800)
+        dismissed_any = dismissed_any or acted_age or acted_cookie
+        if not acted_age and not acted_cookie:
+            break
+        page.wait_for_timeout(200)
 
     if dismissed_any:
         return
 
     # Fallback dle zadání sekce 10 - hledání klíčových slov v klikatelných
     # prvcích, klikne se nejvýš na první nalezenou shodu (opatrnost proti
-    # náhodnému kliknutí na nesouvisející prvek).
+    # náhodnému kliknutí na nesouvisející prvek). Zkusí se jen když výše
+    # nic neuspělo - jinak by mohl omylem překlikat něco navíc.
     for keyword in DISMISS_FALLBACK_KEYWORDS:
         try:
             candidate = page.locator(f"button:has-text('{keyword}'), a:has-text('{keyword}'), input[type=submit][value*='{keyword}' i]").first
