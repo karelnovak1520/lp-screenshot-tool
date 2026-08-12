@@ -117,6 +117,20 @@ def domain_from_offer_title(title: str) -> str | None:
     return None
 
 
+def niche_from_offer_title(title: str) -> str | None:
+    """Niche je první z NICHE_LP_NUMBERS, který se (case-insensitive) objeví
+    jako podřetězec v popisku offeru, např. "TEST - minasdivinas.com -
+    ADULT - CPL(DOI) / UY [Desktop/Mobile]" -> "ADULT", nebo "... -
+    SENIORS 50+ - ..." -> "SENIOR" (shoduje se jako podřetězec, i když
+    popisek má navíc "S 50+"). Vrací None, když se nenajde žádná shoda -
+    pak je potřeba niche zadat ručně přes --niche."""
+    upper_title = title.upper()
+    for niche in NICHE_LP_NUMBERS:
+        if niche in upper_title:
+            return niche
+    return None
+
+
 def get_offer_title(offer_id: str) -> str | None:
     """Zkusí najít titulek offeru v data/offers.json (lokální cache appky).
     Vrací None, pokud tam offer není - pak se doména musí dohledat v adminu.

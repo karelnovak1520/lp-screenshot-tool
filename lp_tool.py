@@ -53,6 +53,7 @@ from config import (
     build_title,
     domain_from_offer_title,
     get_offer_title,
+    niche_from_offer_title,
     parse_lp_number,
     parse_lp_number_from_title,
 )
@@ -326,10 +327,11 @@ def main() -> None:
     parser.add_argument("--offer-id", required=True, help="ID offeru v administraci")
     parser.add_argument(
         "--niche",
-        required=True,
         choices=sorted(NICHE_LP_NUMBERS.keys()),
         type=str.upper,
-        help="Niche offeru - určuje platnou sadu LP čísel a niche_id",
+        help="Niche offeru - určuje platnou sadu LP čísel a niche_id. Když se vynechá, "
+             "odvodí se z popisku offeru (stejně jako doména). Pokud se zadá a nesouhlasí "
+             "s popiskem, vypíše se upozornění, ale použije se zadaná hodnota.",
     )
     parser.add_argument(
         "--niche-id",
@@ -348,28 +350,13 @@ def main() -> None:
         print("Nejdřív se musíš přihlásit: python login.py")
         sys.exit(1)
 
-    niche_id = args.niche_id or NICHE_IDS[args.niche]
-    if not niche_id:
-        print(
-            f"niche_id pro niche {args.niche} není v zadání potvrzené (chybí referenční příklad). "
-            "Potvrď ho ručně a spusť znovu s --niche-id <hodnota>."
-        )
-        sys.exit(1)
-
-    valid_lp_numbers = NICHE_LP_NUMBERS[args.niche]
-    if args.only_lp is not None:
-        valid_lp_numbers = [n for n in valid_lp_numbers if n == args.only_lp]
-        if not valid_lp_numbers:
-            print(f"LP {args.only_lp} není v platné sadě pro niche {args.niche} ({NICHE_LP_NUMBERS[args.niche]}).")
-            sys.exit(1)
-
     viewport = {"width": args.width, "height": args.height}
 
     domain = args.domain
     source_title = None
-    if not domain:
+    if not domain or not args.niche:
         source_title = get_offer_title(args.offer_id)
-        if source_title:
+        if source_title and not domain:
             domain = domain_from_offer_title(source_title)
 
     with sync_playwright() as p:
@@ -377,9 +364,10 @@ def main() -> None:
         admin_context = browser.new_context(storage_state=str(STORAGE_STATE_FILE))
         admin_page = admin_context.new_page()
 
-        if not domain:
+        if not source_title and (not domain or not args.niche):
             source_title = fetch_offer_title_from_admin(admin_page, args.offer_id)
-            domain = domain_from_offer_title(source_title)
+            if not domain:
+                domain = domain_from_offer_title(source_title)
 
         if not domain:
             print(
@@ -390,8 +378,41 @@ def main() -> None:
             browser.close()
             sys.exit(1)
 
+        detected_niche = niche_from_offer_title(source_title) if source_title else None
+        if args.niche and detected_niche and args.niche != detected_niche:
+            print(
+                f"UPOZORNĚNÍ: zadaná --niche {args.niche} nesouhlasí s niche podle popisku offeru "
+                f"('{source_title}' -> {detected_niche}). Používám zadanou hodnotu ({args.niche}) - "
+                "pokud je to omylem, zkontroluj --offer-id/--niche."
+            )
+        niche = args.niche or detected_niche
+        if not niche:
+            print(
+                f"Z popisku offeru '{source_title}' se nepodařilo rozpoznat niche. "
+                "Zadej ji manuálně přes --niche <NICHE>."
+            )
+            browser.close()
+            sys.exit(1)
+
+        niche_id = args.niche_id or NICHE_IDS[niche]
+        if not niche_id:
+            print(
+                f"niche_id pro niche {niche} není v zadání potvrzené (chybí referenční příklad). "
+                "Potvrď ho ručně a spusť znovu s --niche-id <hodnota>."
+            )
+            browser.close()
+            sys.exit(1)
+
+        valid_lp_numbers = NICHE_LP_NUMBERS[niche]
+        if args.only_lp is not None:
+            valid_lp_numbers = [n for n in valid_lp_numbers if n == args.only_lp]
+            if not valid_lp_numbers:
+                print(f"LP {args.only_lp} není v platné sadě pro niche {niche} ({NICHE_LP_NUMBERS[niche]}).")
+                browser.close()
+                sys.exit(1)
+
         print(f"Doména (z popisku '{source_title}'): {domain}")
-        print(f"Niche: {args.niche} (niche_id={niche_id}), platná LP čísla: {valid_lp_numbers}\n")
+        print(f"Niche: {niche} (niche_id={niche_id}), platná LP čísla: {valid_lp_numbers}\n")
 
         all_rows = get_landing_rows(admin_page, args.offer_id)
         rows_by_lp: dict[int, dict] = {}
@@ -422,7 +443,7 @@ def main() -> None:
             path = build_lp_path(lp_number, niche_id)
             preview_url = build_preview_url(domain, path)
             full_url = build_full_url_template(domain, path)
-            title = build_title(lp_number, args.niche)
+            title = build_title(lp_number, niche)
             existing = rows_by_lp.get(lp_number)
 
             label = f"LP{lp_number}"
@@ -471,25 +492,43 @@ def main() -> None:
 
         if args.only_lp is None:
             for lp_number, row in rows_by_lp.items():
-                if lp_number in NICHE_LP_NUMBERS[args.niche]:
+                if lp_number in NICHE_LP_NUMBERS[niche]:
                     continue
-                if "paus" in row["status"].lower():
+
+                path = build_lp_path(lp_number, niche_id)
+                preview_url = build_preview_url(domain, path)
+                full_url = build_full_url_template(domain, path)
+                title = build_title(lp_number, niche)
+                already_paused = "paus" in row["status"].lower()
+
+                if already_paused and row_matches_expected(row, preview_url):
                     continue
-                label = f"LP{lp_number} (mimo platnou sadu {args.niche})"
+
+                label = f"LP{lp_number} (mimo platnou sadu {niche})"
                 dry_run_tag = "[DRY RUN] " if args.dry_run else ""
-                print(f"{dry_run_tag}[{label}] [{row['id']}] {row['title']} -> pause")
-                if args.dry_run:
-                    paused.append(lp_number)
-                    continue
+                print(f"{dry_run_tag}[{label}] [{row['id']}] {row['title']} -> pause + oprava na {preview_url}")
+                screenshot_path = None
                 try:
+                    screenshot_path = screenshot_lp(browser, domain, path, args.afid, viewport)
+                    print(f"  screenshot: {screenshot_path}")
+                    if args.dry_run:
+                        paused.append(lp_number)
+                        continue
                     row_locator = open_inline_edit(admin_page, row["id"])
-                    fill_inline_form(row_locator, "inline_edit", status="paused")
+                    fill_inline_form(
+                        row_locator, "inline_edit",
+                        title=title, preview_path=str(screenshot_path),
+                        url=full_url, url_preview=preview_url, status="paused",
+                    )
                     submit_inline_form(admin_page, row_locator, "inline_edit")
-                    print("  status nastaven na paused")
+                    print("  uloženo do administrace, status paused")
                     paused.append(lp_number)
                 except Exception as exc:
                     print(f"  CHYBA: {exc}")
                     failed.append(lp_number)
+                finally:
+                    if screenshot_path and not args.dry_run:
+                        screenshot_path.unlink(missing_ok=True)
 
         browser.close()
 
