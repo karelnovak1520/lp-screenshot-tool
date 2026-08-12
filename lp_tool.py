@@ -54,6 +54,7 @@ from config import (
     domain_from_offer_title,
     get_offer_title,
     parse_lp_number,
+    parse_lp_number_from_title,
 )
 
 STORAGE_STATE_FILE = Path(__file__).parent / "storage_state.json"
@@ -397,6 +398,13 @@ def main() -> None:
         unparsed_rows: list[dict] = []
         for row in all_rows:
             lp_number = parse_lp_number(row["url_preview"] or row["url"])
+            if lp_number is None:
+                # URL/URL preview jsou nepoužitelné (např. jen ".") - zkusí
+                # se ještě titulek řádku (viz parse_lp_number_from_title),
+                # než se řádek vzdá a nechá na ruční kontrolu. Číslo z
+                # titulku pak stejně projde běžnou Add/Edit logikou níž -
+                # pokud LP existuje pod špatnou URL, spraví se to jako Edit.
+                lp_number = parse_lp_number_from_title(row["title"])
             if lp_number is None:
                 unparsed_rows.append(row)
             else:

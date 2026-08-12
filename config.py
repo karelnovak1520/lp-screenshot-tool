@@ -74,6 +74,7 @@ DISMISS_FALLBACK_KEYWORDS = ["18", "adult", "yes", "entrar", "confirmo", "tengo"
 
 _DOMAIN_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$", re.IGNORECASE)
 _LP_NUMBER_RE = re.compile(r"/lp/(\d+)/")
+_TITLE_LP_NUMBER_RE = re.compile(r"^LP0*(\d+)", re.IGNORECASE)
 
 
 def looks_like_domain(value: str) -> bool:
@@ -142,6 +143,18 @@ def parse_lp_number(url_or_path: str) -> int | None:
     když vzor v hodnotě není (starší/cizí formát cesty - řádek se pak
     nepřiřazuje k žádnému LP číslu a musí se přeskočit s varováním)."""
     match = _LP_NUMBER_RE.search(url_or_path)
+    return int(match.group(1)) if match else None
+
+
+def parse_lp_number_from_title(title: str) -> int | None:
+    """Záchranný fallback pro parse_lp_number() - použije se JEN když se
+    číslo LP nepodaří vytáhnout z URL ani URL preview (např. URL preview je
+    jen "." - poškozený/rozbitý řádek). Titulek typu "LP02 - ADULT" je
+    slabší signál než URL (klidně může být zastaralý nebo překlepnutý), ale
+    lepší než řádek úplně přeskočit, když URL nedává žádné vodítko.
+
+    Nikdy nemá přednost před URL, jen ji doplňuje, když URL selže úplně."""
+    match = _TITLE_LP_NUMBER_RE.match(title.strip())
     return int(match.group(1)) if match else None
 
 
