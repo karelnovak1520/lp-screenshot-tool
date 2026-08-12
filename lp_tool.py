@@ -33,7 +33,7 @@ from __future__ import annotations
 import argparse
 import re
 import sys
-import tempfile
+import time
 import uuid
 from pathlib import Path
 
@@ -57,33 +57,89 @@ from config import (
 )
 
 STORAGE_STATE_FILE = Path(__file__).parent / "storage_state.json"
+SCREENSHOTS_DIR = Path(__file__).parent / "screenshots"
 SUCCESS_TEXT_RE = re.compile(r"Successfully (added|edited|created|inserted)", re.IGNORECASE)
+
+
+CONSENT_REJECT_HINTS = ["reject", "decline", "deny", "refuse", "rall", "disagree"]
+CONSENT_MANAGE_HINTS = ["settings", "preferences", "manage", "choose", "customize", "customise", "options"]
+
+
+def _find_visible_cookie_dialog(page: Page, timeout_ms: int = 4000):
+    """Najde viditelný dialog/banner zmiňující slovo "cookie" (nepřekládá se
+    ve valné většině jazyků). Musí být VIDITELNÝ, ne jen v DOM - po otevření
+    detailního panelu nastavení zůstává původní (jednodušší) banner často v
+    DOM dál viditelný jako obal (např. zralalaska.cz má detailní panel
+    nastavení vnořený PŘÍMO UVNITŘ toho jednoduchého banneru, ne jako jeho
+    sourozenec), takže se bere POSLEDNÍ (= nejvnořenější, tedy aktuálně
+    relevantní) viditelná shoda, ne první.
+
+    Opakuje se až `timeout_ms` - některé cookie lišty (např. zralalaska.cz)
+    se objeví až s cca 2s zpožděním po načtení stránky (vlastní JS časovač
+    knihovny), takže jednorázová kontrola hned po `page.goto()` by je
+    nenašla vůbec."""
+    deadline = time.monotonic() + timeout_ms / 1000
+    while time.monotonic() < deadline:
+        try:
+            candidates = page.locator('[role="dialog"], [role="alertdialog"]').filter(
+                has_text=re.compile("cookie", re.IGNORECASE)
+            )
+            last_visible = None
+            for i in range(candidates.count()):
+                candidate = candidates.nth(i)
+                if candidate.is_visible():
+                    last_visible = candidate
+            if last_visible is not None:
+                return last_visible
+        except Exception:
+            pass
+        page.wait_for_timeout(200)
+    return None
+
+
+def _click_hinted(scope, hints: list[str]) -> bool:
+    """Klikne na první prvek ve `scope`, jehož id/class/data-cc obsahuje
+    jeden z `hints` - tyhle atributy jsou v kódu vždy anglicky, i na
+    přeloženém webu, takže je to jazykově nezávislejší signál než text
+    tlačítka."""
+    selector = ", ".join(f"[id*='{h}' i], [class*='{h}' i], [data-cc*='{h}' i]" for h in hints)
+    try:
+        btn = scope.locator(selector).first
+        if btn.count() > 0:
+            btn.click(timeout=2000)
+            return True
+    except Exception:
+        pass
+    return False
 
 
 def dismiss_overlays(page: Page) -> None:
     """Best-effort odbavení cookie lišty / age gate. Neselže, když nic nenajde.
 
-    Cookie lišta se odbavuje obecně, bez ohledu na jazyk: najde se libovolný
-    dialog, který zmiňuje slovo "cookie"/"cookies" (to se ve valné většině
-    jazyků nepřekládá), a klikne se na první tlačítko/odkaz v něm. Nezáleží,
-    jestli je to "accept" nebo "reject" - jde o jednorázový headless kontext
-    bez reálného návštěvníka, takže na konkrétní volbě souhlasu nezáleží,
-    důležité je jen dostat čistý screenshot.
+    Cookie lišta se odmítá cíleně, bez ohledu na jazyk webu: id/class/data-cc
+    atributy tlačítek jsou v kódu vždy anglicky (např. "s-rall-bn" pro
+    "Odmítnout vše"), i když zobrazený text je český/německý/apod. Nejdřív
+    se zkusí přímé "reject" tlačítko; pokud banner nabízí jen "accept" +
+    "nastavení/vybrat" (dvoukrokové varianty, viz zralalaska.cz), otevře se
+    nejdřív ono a reject se zkusí znovu v nově otevřeném panelu. Pokud se
+    reject nikde nenajde, NEKLIKÁ se na "accept" jako náhradu - lepší
+    zůstat s bannerem na screenshotu, než omylem odsouhlasit cookies.
 
     Age gate (potvrzení "jsem 18+") se řeší samostatně, přesným seznamem
     textů (AGE_GATE_BUTTON_TEXTS) - špatná volba by tam znamenala odchod na
-    "jsem nezletilý" stránku, ne jen jinak vypadající lištu, takže obecná
-    detekce podle klíčového slova by tu nebyla bezpečná.
+    "jsem nezletilý" stránku, ne jen jinak vypadající lištu, takže tahle
+    obecná id/class detekce by tu nebyla bezpečná (výběr "jsem nezletilý" by
+    klidně mohl mít id obsahující něco jako "no"/"deny" taky).
     """
     try:
-        cookie_dialog = page.locator('[role="dialog"], [role="alertdialog"]').filter(
-            has_text=re.compile("cookie", re.IGNORECASE)
-        ).first
-        if cookie_dialog.count() > 0:
-            btn = cookie_dialog.locator("button, [role='button'], a[href]").first
-            if btn.count() > 0:
-                btn.click(timeout=2000)
-                page.wait_for_timeout(300)
+        dialog = _find_visible_cookie_dialog(page)
+        if dialog and not _click_hinted(dialog, CONSENT_REJECT_HINTS):
+            if _click_hinted(dialog, CONSENT_MANAGE_HINTS):
+                page.wait_for_timeout(400)
+                dialog2 = _find_visible_cookie_dialog(page)
+                if dialog2:
+                    _click_hinted(dialog2, CONSENT_REJECT_HINTS)
+        page.wait_for_timeout(300)
     except Exception:
         pass
 
@@ -132,7 +188,8 @@ def screenshot_lp(browser, domain: str, path: str, afid: str, viewport: dict) ->
     dismiss_overlays(page)
     page.wait_for_timeout(500)
 
-    out_path = Path(tempfile.gettempdir()) / f"lp-screenshot-{uuid.uuid4().hex}.png"
+    SCREENSHOTS_DIR.mkdir(exist_ok=True)
+    out_path = SCREENSHOTS_DIR / f"lp-screenshot-{uuid.uuid4().hex}.png"
     page.screenshot(path=str(out_path))
     context.close()
     return out_path
