@@ -494,41 +494,23 @@ def main() -> None:
             for lp_number, row in rows_by_lp.items():
                 if lp_number in NICHE_LP_NUMBERS[niche]:
                     continue
-
-                path = build_lp_path(lp_number, niche_id)
-                preview_url = build_preview_url(domain, path)
-                full_url = build_full_url_template(domain, path)
-                title = build_title(lp_number, niche)
-                already_paused = "paus" in row["status"].lower()
-
-                if already_paused and row_matches_expected(row, preview_url):
+                if "paus" in row["status"].lower():
                     continue
-
                 label = f"LP{lp_number} (mimo platnou sadu {niche})"
                 dry_run_tag = "[DRY RUN] " if args.dry_run else ""
-                print(f"{dry_run_tag}[{label}] [{row['id']}] {row['title']} -> pause + oprava na {preview_url}")
-                screenshot_path = None
+                print(f"{dry_run_tag}[{label}] [{row['id']}] {row['title']} -> pause")
+                if args.dry_run:
+                    paused.append(lp_number)
+                    continue
                 try:
-                    screenshot_path = screenshot_lp(browser, domain, path, args.afid, viewport)
-                    print(f"  screenshot: {screenshot_path}")
-                    if args.dry_run:
-                        paused.append(lp_number)
-                        continue
                     row_locator = open_inline_edit(admin_page, row["id"])
-                    fill_inline_form(
-                        row_locator, "inline_edit",
-                        title=title, preview_path=str(screenshot_path),
-                        url=full_url, url_preview=preview_url, status="paused",
-                    )
+                    fill_inline_form(row_locator, "inline_edit", status="paused")
                     submit_inline_form(admin_page, row_locator, "inline_edit")
-                    print("  uloženo do administrace, status paused")
+                    print("  status nastaven na paused")
                     paused.append(lp_number)
                 except Exception as exc:
                     print(f"  CHYBA: {exc}")
                     failed.append(lp_number)
-                finally:
-                    if screenshot_path and not args.dry_run:
-                        screenshot_path.unlink(missing_ok=True)
 
         browser.close()
 
