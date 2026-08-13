@@ -316,6 +316,17 @@ def fill_inline_form(row: Locator, prefix: str, *, title: str | None = None, pre
 def submit_inline_form(admin_page: Page, row: Locator, prefix: str) -> None:
     row.locator(f'[name="{prefix}[submit]"]').click()
     admin_page.wait_for_selector(f"text=/{SUCCESS_TEXT_RE.pattern}/i", timeout=10000)
+    # Úspěšná hláška se objeví dřív, než grid dokončí AJAX reload/překreslení
+    # řádků po uložení. Bez počkání na to hrozí, že se na DALŠÍ řádek (další
+    # open_inline_add/open_inline_edit hned poté) sáhne uprostřed překreslení
+    # a formulář se odešle na už neplatný/mizející prvek - ověřeno v praxi
+    # (offer 16793, LP20: "Successfully added" se ukázalo, řádek ale nikdy
+    # nevznikl - fungovalo až při opakování, kdy grid už byl v klidu).
+    try:
+        admin_page.wait_for_load_state("networkidle", timeout=5000)
+    except Exception:
+        pass
+    admin_page.wait_for_timeout(500)
 
 
 def row_matches_expected(row: dict, expected_preview_url: str) -> bool:
