@@ -1,0 +1,6 @@
+storage_state.json
+screenshots/
+*.png
+.venv/
+__pycache__/
+*.pyc
