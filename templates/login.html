@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}LP preview tool - Login{% endblock %}
+{% block content %}
+
+<h1>LP preview tool</h1>
+
+<fieldset>
+  <legend>1. Login</legend>
+  <div id="platform-statuses"></div>
+</fieldset>
+
+<a class="nav-link" href="/tool" id="continue-link">Continue to the tool →</a>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+const platforms = {{ platforms | tojson }};
+
+async function refreshLoginStatuses() {
+  let statuses;
+  try {
+    const res = await fetch("/login-status");
+    statuses = await res.json();
+    offlineBanner.style.display = "none";
+  } catch (err) {
+    offlineBanner.style.display = "block";
+    return;
+  }
+  const container = document.getElementById("platform-statuses");
+  container.innerHTML = "";
+  for (const key of Object.keys(platforms)) {
+    const st = statuses[key];
+    const div = document.createElement("div");
+    div.className = "platform-status";
+    const dotClass = st.in_progress ? "wait" : (st.logged_in ? "ok" : "no");
+    const label = st.in_progress ? "waiting for login confirmation..." : (st.logged_in ? "logged in" : "not logged in");
+    div.innerHTML = `
+      <span class="dot ${dotClass}"></span>
+      <strong>${platforms[key].label}</strong> - ${label}
+      ${st.in_progress
+        ? `<button type="button" data-confirm="${key}">Done, save session</button>`
+        : `<button type="button" data-start="${key}">${st.logged_in ? "Log in again" : "Log in"}</button>`}
+    `;
+    container.appendChild(div);
+  }
+
+  container.querySelectorAll("[data-start]").forEach(btn => {
+    btn.onclick = async () => {
+      try {
+        await fetch("/login/start", {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({platform: btn.dataset.start})
+        });
+      } catch (err) {
+        offlineBanner.style.display = "block";
+        return;
+      }
+      refreshLoginStatuses();
+    };
+  });
+  container.querySelectorAll("[data-confirm]").forEach(btn => {
+    btn.onclick = async () => {
+      try {
+        await fetch("/login/confirm", {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({platform: btn.dataset.confirm})
+        });
+      } catch (err) {
+        offlineBanner.style.display = "block";
+        return;
+      }
+      refreshLoginStatuses();
+    };
+  });
+}
+refreshLoginStatuses();
+setInterval(refreshLoginStatuses, 4000);
+</script>
+{% endblock %}

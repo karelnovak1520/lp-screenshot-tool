@@ -1,31 +1,38 @@
 """
-Nástroj pro hromadné vytváření/opravu landing page záznamů a jejich náhledů
-v administraci affiliates.daoofleads.com, podle platné sady LP čísel dané niche.
+Tool for bulk creating/fixing landing page records and their previews in the
+affiliates.{platform}.com admin, according to the niche's valid set of LP
+numbers.
 
-Postup pro daný offer_id + niche:
-  1. Doména se vezme z popisku (title) offeru v adminu, NIKDY ze statické
-     mapy niche -> domain a NIKDY z existující URL v gridu (ta může být
-     špatně/zastaralá).
-  2. Podle niche se zjistí platná sada čísel LP a niche_id (config.py).
-  3. Načte se grid "Landing page" offeru a řádky se přiřadí k LP číslům
-     podle vzoru /lp/{N}/4/{niche_id}/ v jejich URL preview.
-  4. Pro každé platné LP číslo:
-       - řádek neexistuje -> Add (screenshot + nový řádek, status active)
-       - řádek existuje, ale URL preview neodpovídá očekávané doméně/cestě
-         -> Edit (nový screenshot, přepsané URL/URL preview, title)
-       - řádek existuje a je v pořádku -> nic se nedělá
-  5. Řádky, jejichž LP číslo NENÍ v platné sadě dané niche, se ponechají
-     obsahově beze změny a jen se jim nastaví status Paused.
-  6. Řádky, u kterých se nepodaří rozpoznat LP číslo, se přeskočí s varováním
-     (nikdy se nehádá, co s nimi - jen se zaloguje k ruční kontrole).
+Steps for a given offer_id + niche:
+  1. The domain is taken from the offer's title in the admin, NEVER from a
+     static niche -> domain map and NEVER from the existing URL in the grid
+     (that one can be wrong/stale).
+  2. The niche determines the valid set of LP numbers and the niche_id
+     (config.py).
+  3. The offer's "Landing page" grid is loaded and rows are matched to LP
+     numbers by Title (shaped like "LP{N} - {NICHE}") - not by URL, because
+     cloned rows carry over a foreign domain and a foreign LP number in
+     their URL.
+  4. For every valid LP number:
+       - the row doesn't exist -> Add (screenshot + new row, status active)
+       - the row exists but its URL preview doesn't match the expected
+         domain/path -> Edit (new screenshot, rewritten URL/URL preview,
+         title)
+       - the row exists and is fine -> nothing happens
+  5. Rows whose LP number is NOT in the niche's valid set are left
+     untouched content-wise and just get their status set to Paused
+     (unless already Paused or Deleted).
+  6. Rows whose LP number can't be recognized are skipped with a warning
+     (never guessed at - just logged for manual review).
 
-Nástroj nikdy nemaže řádky (do=deleteLanding) - to je vždy ruční akce.
+The tool never deletes rows (do=deleteLanding) - that's always a manual
+action.
 
-Použití:
-    python login.py                                     # jednou, ručně se přihlásit
-    python lp_tool.py --offer-id 16689 --niche ADULT --dry-run
-    python lp_tool.py --offer-id 16689 --niche ADULT --only-lp 10
-    python lp_tool.py --offer-id 16689 --niche ADULT
+Usage:
+    python login.py --platform daoofleads               # once, log in manually
+    python lp_tool.py --platform daoofleads --offer-id 16689 --niche ADULT --dry-run
+    python lp_tool.py --platform daoofleads --offer-id 16689 --niche ADULT --only-lp 10
+    python lp_tool.py --platform daoofleads --offer-id 16689 --niche ADULT
 """
 
 from __future__ import annotations
@@ -40,33 +47,45 @@ from pathlib import Path
 from playwright.sync_api import Locator, Page, sync_playwright
 
 from config import (
-    ADMIN_BASE,
     DEFAULT_AFID,
+    DEFAULT_PLATFORM,
     DEFAULT_VIEWPORT,
     DISMISS_BUTTON_TEXTS,
     DISMISS_FALLBACK_KEYWORDS,
     NICHE_IDS,
     NICHE_LP_NUMBERS,
+    PLATFORMS,
     build_full_url_template,
     build_lp_path,
     build_preview_url,
     build_title,
     domain_from_offer_title,
-    get_offer_title,
     parse_lp_number_from_title,
 )
 
-STORAGE_STATE_FILE = Path(__file__).parent / "storage_state.json"
+STORAGE_STATE_DIR = Path(__file__).parent
 SUCCESS_TEXT_RE = re.compile(r"Successfully (added|edited|created|inserted)", re.IGNORECASE)
 
 
-def dismiss_overlays(page: Page) -> None:
-    """Best-effort odbavení cookie lišty / age gate. Neselže, když nic nenajde.
+class ToolError(Exception):
+    """An error that stops the whole run (missing login, unrecognized
+    domain, invalid niche) - as opposed to a single LP's error, which just
+    gets logged and the run continues."""
 
-    Dva průchody seznamem textů, protože dvoukrokové cookie bannery ("Let me
-    choose"/"Déjame elegir" -> teprve pak se objeví "Reject all"/"Rechazar
-    todas") by v jediném průchodu mohly být odbavené jen zpola, pokud tlačítko
-    druhého kroku vyjde v DISMISS_BUTTON_TEXTS dřív než tlačítko prvního kroku.
+
+def storage_state_path(platform: str) -> Path:
+    return STORAGE_STATE_DIR / PLATFORMS[platform]["storage_state_filename"]
+
+
+def dismiss_overlays(page: Page) -> None:
+    """Best-effort dismissal of the cookie banner / age gate. Doesn't fail
+    if it finds nothing.
+
+    Two passes over the text list, because two-step cookie banners ("Let me
+    choose"/"Déjame elegir" -> only then does "Reject all"/"Rechazar todas"
+    appear) could otherwise be only half-handled in a single pass, if the
+    second step's button comes before the first step's in
+    DISMISS_BUTTON_TEXTS.
     """
     dismissed_any = False
     for _ in range(2):
@@ -83,9 +102,9 @@ def dismiss_overlays(page: Page) -> None:
     if dismissed_any:
         return
 
-    # Fallback dle zadání sekce 10 - hledání klíčových slov v klikatelných
-    # prvcích, klikne se nejvýš na první nalezenou shodu (opatrnost proti
-    # náhodnému kliknutí na nesouvisející prvek).
+    # Fallback for when none of the exact texts matched - looks for a
+    # keyword among clickable elements, clicks at most the first match
+    # found (caution against clicking something unrelated by mistake).
     for keyword in DISMISS_FALLBACK_KEYWORDS:
         try:
             candidate = page.locator(f"button:has-text('{keyword}'), a:has-text('{keyword}'), input[type=submit][value*='{keyword}' i]").first
@@ -105,7 +124,8 @@ def screenshot_lp(browser, domain: str, path: str, afid: str, viewport: dict) ->
     try:
         page.goto(url, wait_until="networkidle", timeout=30000)
     except Exception:
-        # networkidle nemusí nastat na strankach s trackery co běží pořád - zkusíme dál i tak
+        # networkidle might never fire on pages with trackers that keep
+        # running - try to continue anyway
         pass
     dismiss_overlays(page)
     page.wait_for_timeout(500)
@@ -116,23 +136,26 @@ def screenshot_lp(browser, domain: str, path: str, afid: str, viewport: dict) ->
     return out_path
 
 
-def fetch_offer_title_from_admin(admin_page: Page, offer_id: str) -> str:
-    """Fallback, když offer není v lokálním data/offers.json - zkusí vytáhnout
-    popisek offeru přímo z hlavní edit stránky offeru v adminu."""
-    admin_page.goto(f"{ADMIN_BASE}/en/admin/offer/edit/{offer_id}?locale=en", wait_until="networkidle")
-    return admin_page.locator("h1").first.inner_text()
+def fetch_offer_title_from_admin(admin_page: Page, admin_base: str, offer_id: str) -> str:
+    """Pulls the offer's title from its main edit page in the admin. It's
+    not the <h1> - that's just a generic "Offer offer edit" heading, the
+    same on every offer - the real title is in the navbar-brand link in the
+    top-left corner of the page."""
+    admin_page.goto(f"{admin_base}/en/admin/offer/edit/{offer_id}?locale=en", wait_until="networkidle")
+    return admin_page.locator("a.navbar-brand strong").first.inner_text()
 
 
-def get_landing_rows(admin_page: Page, offer_id: str) -> list[dict]:
-    grid_url = f"{ADMIN_BASE}/en/admin/offer/edit/{offer_id}/landing?locale=en&landingGrid-perPage=200"
+def get_landing_rows(admin_page: Page, admin_base: str, offer_id: str) -> list[dict]:
+    grid_url = f"{admin_base}/en/admin/offer/edit/{offer_id}/landing?locale=en&landingGrid-perPage=200"
     admin_page.goto(grid_url, wait_until="networkidle")
 
     table = admin_page.locator("table").first
 
-    # thead má víc <tr> (samostatný řádek se zaškrtávátkem, řádek s názvy
-    # sloupců, řádek s filtry) - je potřeba najít konkrétně ten s názvy
-    # sloupců podle OBSAHU, ne podle pozice, jinak se sloupce posunou oproti
-    # reálným <td> v řádcích (viz README - "Známá omezení").
+    # thead has more than one <tr> (a standalone row with just the
+    # select-all checkbox, a row with the column labels, a row with the
+    # filter inputs) - the label row needs to be found by CONTENT, not by
+    # position, otherwise the columns shift relative to the real <td> in
+    # each row (see README - "Known limitations").
     required = ["id", "title", "url", "url preview", "status"]
     thead_rows = table.locator("thead tr")
     headers = None
@@ -148,8 +171,8 @@ def get_landing_rows(admin_page: Page, offer_id: str) -> list[dict]:
             for r in range(thead_rows.count())
         ]
         raise RuntimeError(
-            f"Řádek hlavičky obsahující {required} nenalezen (thead řádky: {all_rows_preview}). "
-            "Struktura admin gridu se zřejmě liší - je potřeba upravit get_landing_rows() v lp_tool.py."
+            f"Couldn't find a header row containing {required} (thead rows: {all_rows_preview}). "
+            "The admin grid structure has apparently changed - get_landing_rows() in lp_tool.py needs updating."
         )
     col = {name: i for i, name in enumerate(headers)}
 
@@ -174,7 +197,7 @@ def get_landing_rows(admin_page: Page, offer_id: str) -> list[dict]:
 def open_inline_add(admin_page: Page) -> Locator:
     add_link = admin_page.locator('a[href*="do=landingGrid-showInlineAdd"]')
     if add_link.count() == 0:
-        raise RuntimeError("Tlačítko Add (do=landingGrid-showInlineAdd) nenalezeno v gridu.")
+        raise RuntimeError("Add button (do=landingGrid-showInlineAdd) not found in the grid.")
     add_link.first.click()
     admin_page.wait_for_load_state("networkidle")
     admin_page.wait_for_selector('[name="inline_add[title]"]', timeout=10000)
@@ -186,7 +209,7 @@ def open_inline_edit(admin_page: Page, row_id: str) -> Locator:
         f'a[href*="do=landingGrid-inlineEdit"][href*="landingGrid-id={row_id}"]'
     )
     if edit_link.count() == 0:
-        raise RuntimeError(f"Edit link pro řádek {row_id} nenalezen.")
+        raise RuntimeError(f"Edit link for row {row_id} not found.")
     edit_link.first.click()
     admin_page.wait_for_load_state("networkidle")
     admin_page.wait_for_selector('[name="inline_edit[title]"]', timeout=10000)
@@ -216,79 +239,92 @@ def row_matches_expected(row: dict, expected_preview_url: str) -> bool:
     return row["url_preview"].rstrip("/") == expected_preview_url.rstrip("/")
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--offer-id", required=True, help="ID offeru v administraci")
-    parser.add_argument(
-        "--niche",
-        required=True,
-        choices=sorted(NICHE_LP_NUMBERS.keys()),
-        type=str.upper,
-        help="Niche offeru - určuje platnou sadu LP čísel a niche_id",
-    )
-    parser.add_argument(
-        "--niche-id",
-        help="Vynutit niche_id ručně (povinné pro TRANS, dokud nebude potvrzeno v zadání)",
-    )
-    parser.add_argument("--afid", default=DEFAULT_AFID, help=f"affiliate ID pro screenshoty (default {DEFAULT_AFID})")
-    parser.add_argument("--width", type=int, default=DEFAULT_VIEWPORT["width"])
-    parser.add_argument("--height", type=int, default=DEFAULT_VIEWPORT["height"])
-    parser.add_argument("--domain", help="vynutit doménu manuálně (přeskočí odvozování z popisku offeru)")
-    parser.add_argument("--only-lp", type=int, help="zpracovat jen jedno konkrétní LP číslo, pro testování")
-    parser.add_argument("--dry-run", action="store_true", help="jen udělat screenshoty a vypsat plán, nic neuploadovat/neukládat do administrace")
-    parser.add_argument("--headless", action="store_true", help="spustit prohlížeč bez viditelného okna")
-    args = parser.parse_args()
+def row_is_untouchable(status: str) -> bool:
+    """Paused and Deleted rows outside the valid set are left untouched -
+    Deleted is a more final state than Paused, and should never be
+    "revived" back to Paused."""
+    status = status.lower()
+    return "paus" in status or "delet" in status
 
-    if not STORAGE_STATE_FILE.exists():
-        print("Nejdřív se musíš přihlásit: python login.py")
-        sys.exit(1)
 
-    niche_id = args.niche_id or NICHE_IDS[args.niche]
-    if not niche_id:
-        print(
-            f"niche_id pro niche {args.niche} není v zadání potvrzené (chybí referenční příklad). "
-            "Potvrď ho ručně a spusť znovu s --niche-id <hodnota>."
+def run_tool(
+    *,
+    platform: str,
+    offer_id: str,
+    niche: str,
+    niche_id: str | None = None,
+    afid: str = DEFAULT_AFID,
+    width: int = DEFAULT_VIEWPORT["width"],
+    height: int = DEFAULT_VIEWPORT["height"],
+    domain: str | None = None,
+    only_lp: int | None = None,
+    dry_run: bool = False,
+    headless: bool = False,
+    log=print,
+) -> dict:
+    """The tool's main logic, callable both from the CLI (main()) and from
+    the web app. Logs progress through the `log(text)` callback and returns
+    a result summary. Raises ToolError for fatal errors (missing login,
+    invalid niche, unrecognized domain) - that should stop the whole run,
+    as opposed to a single LP's error, which just gets logged and the run
+    continues."""
+    if platform not in PLATFORMS:
+        raise ToolError(f"Unknown platform {platform!r}. Valid: {sorted(PLATFORMS)}")
+    admin_base = PLATFORMS[platform]["admin_base"]
+
+    state_path = storage_state_path(platform)
+    if not state_path.exists():
+        raise ToolError(
+            f"You need to log in for platform {platform} first: "
+            f"python login.py --platform {platform}"
         )
-        sys.exit(1)
 
-    valid_lp_numbers = NICHE_LP_NUMBERS[args.niche]
-    if args.only_lp is not None:
-        valid_lp_numbers = [n for n in valid_lp_numbers if n == args.only_lp]
+    niche = niche.upper()
+    if niche not in NICHE_LP_NUMBERS:
+        raise ToolError(f"Unknown niche {niche!r}. Valid: {sorted(NICHE_LP_NUMBERS)}")
+
+    resolved_niche_id = niche_id or NICHE_IDS[niche]
+    if not resolved_niche_id:
+        raise ToolError(
+            f"niche_id for niche {niche} isn't confirmed (no reference example). "
+            "Confirm it manually and run again with niche_id filled in."
+        )
+
+    valid_lp_numbers = NICHE_LP_NUMBERS[niche]
+    if only_lp is not None:
+        valid_lp_numbers = [n for n in valid_lp_numbers if n == only_lp]
         if not valid_lp_numbers:
-            print(f"LP {args.only_lp} není v platné sadě pro niche {args.niche} ({NICHE_LP_NUMBERS[args.niche]}).")
-            sys.exit(1)
+            raise ToolError(f"LP {only_lp} isn't in the valid set for niche {niche} ({NICHE_LP_NUMBERS[niche]}).")
 
-    viewport = {"width": args.width, "height": args.height}
-
-    domain = args.domain
+    viewport = {"width": width, "height": height}
     source_title = None
-    if not domain:
-        source_title = get_offer_title(args.offer_id)
-        if source_title:
-            domain = domain_from_offer_title(source_title)
+
+    created, updated, paused, skipped, failed = [], [], [], [], []
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=args.headless)
-        admin_context = browser.new_context(storage_state=str(STORAGE_STATE_FILE))
+        browser = p.chromium.launch(headless=headless)
+        admin_context = browser.new_context(storage_state=str(state_path))
         admin_page = admin_context.new_page()
 
         if not domain:
-            source_title = fetch_offer_title_from_admin(admin_page, args.offer_id)
+            source_title = fetch_offer_title_from_admin(admin_page, admin_base, offer_id)
             domain = domain_from_offer_title(source_title)
 
         if not domain:
-            print(
-                f"Z popisku offeru '{source_title}' se nepodařilo rozpoznat doménu "
-                "(zřejmě starší offer bez domény v titulku, jen s lidským názvem brandu). "
-                "Zadej doménu manuálně přes --domain <doména>."
-            )
             browser.close()
-            sys.exit(1)
+            raise ToolError(
+                f"Couldn't recognize a domain from the offer title '{source_title}' "
+                "(probably an older offer with no domain in the title, just a human brand name). "
+                "Enter the domain manually."
+            )
 
-        print(f"Doména (z popisku '{source_title}'): {domain}")
-        print(f"Niche: {args.niche} (niche_id={niche_id}), platná LP čísla: {valid_lp_numbers}\n")
+        if dry_run:
+            log("=== MODE: DRY-RUN - NOTHING will be written to the admin, screenshots and plan only ===\n")
 
-        all_rows = get_landing_rows(admin_page, args.offer_id)
+        log(f"Domain (from title '{source_title}'): {domain}")
+        log(f"Platform: {PLATFORMS[platform]['label']} | Niche: {niche} (niche_id={resolved_niche_id}), valid LP numbers: {valid_lp_numbers}\n")
+
+        all_rows = get_landing_rows(admin_page, admin_base, offer_id)
         rows_by_lp: dict[int, dict] = {}
         unparsed_rows: list[dict] = []
         for row in all_rows:
@@ -298,35 +334,33 @@ def main() -> None:
             else:
                 rows_by_lp[lp_number] = row
 
-        if unparsed_rows and args.only_lp is None:
-            print(f"Přeskakuji {len(unparsed_rows)} řádků bez rozpoznatelného LP čísla (ruční kontrola):")
+        if unparsed_rows and only_lp is None:
+            log(f"Skipping {len(unparsed_rows)} row(s) with no recognizable LP number (manual review):")
             for row in unparsed_rows:
-                print(f"  [{row['id']}] {row['title']} - {row['url_preview'] or row['url']}")
-            print()
-
-        created, updated, paused, skipped, failed = [], [], [], [], []
+                log(f"  [{row['id']}] {row['title']} - {row['url_preview'] or row['url']}")
+            log("")
 
         for lp_number in valid_lp_numbers:
-            path = build_lp_path(lp_number, niche_id)
+            path = build_lp_path(lp_number, resolved_niche_id)
             preview_url = build_preview_url(domain, path)
             full_url = build_full_url_template(domain, path)
-            title = build_title(lp_number, args.niche)
+            title = build_title(lp_number, niche)
             existing = rows_by_lp.get(lp_number)
 
             label = f"LP{lp_number}"
             screenshot_path = None
             try:
                 if existing and row_matches_expected(existing, preview_url):
-                    print(f"[{label}] už odpovídá ({preview_url}) - přeskakuji")
+                    log(f"[{label}] already matches ({preview_url}) - skipping")
                     skipped.append(lp_number)
                     continue
 
                 action = "edit" if existing else "add"
-                print(f"[{label}] {action} -> {preview_url}")
-                screenshot_path = screenshot_lp(browser, domain, path, args.afid, viewport)
-                print(f"  screenshot: {screenshot_path}")
+                log(f"[{label}] {action} -> {preview_url}")
+                screenshot_path = screenshot_lp(browser, domain, path, afid, viewport)
+                log(f"  screenshot: {screenshot_path}")
 
-                if args.dry_run:
+                if dry_run:
                     (updated if action == "edit" else created).append(lp_number)
                     continue
 
@@ -348,43 +382,98 @@ def main() -> None:
                     )
                     submit_inline_form(admin_page, row, "inline_edit")
                     updated.append(lp_number)
-                print("  uloženo do administrace")
+                log("  saved to admin")
             except Exception as exc:
-                print(f"  CHYBA: {exc}")
+                log(f"  ERROR: {exc}")
                 failed.append(lp_number)
             finally:
-                if screenshot_path and not args.dry_run:
+                if screenshot_path and not dry_run:
                     screenshot_path.unlink(missing_ok=True)
 
-        if args.only_lp is None:
+        if only_lp is None:
             for lp_number, row in rows_by_lp.items():
-                if lp_number in NICHE_LP_NUMBERS[args.niche]:
+                if lp_number in NICHE_LP_NUMBERS[niche]:
                     continue
-                if "paus" in row["status"].lower():
+                if row_is_untouchable(row["status"]):
                     continue
-                label = f"LP{lp_number} (mimo platnou sadu {args.niche})"
-                print(f"[{label}] [{row['id']}] {row['title']} -> pause")
-                if args.dry_run:
+                label = f"LP{lp_number} (outside {niche}'s valid set)"
+                log(f"[{label}] [{row['id']}] {row['title']} -> pause")
+                if dry_run:
                     paused.append(lp_number)
                     continue
                 try:
                     row_locator = open_inline_edit(admin_page, row["id"])
                     fill_inline_form(row_locator, "inline_edit", status="paused")
                     submit_inline_form(admin_page, row_locator, "inline_edit")
-                    print("  status nastaven na paused")
+                    log("  status set to paused")
                     paused.append(lp_number)
                 except Exception as exc:
-                    print(f"  CHYBA: {exc}")
+                    log(f"  ERROR: {exc}")
                     failed.append(lp_number)
 
         browser.close()
 
-    print(
-        f"\nHotovo. Vytvořeno: {len(created)}, upraveno: {len(updated)}, "
-        f"pozastaveno: {len(paused)}, beze změny: {len(skipped)}, chyby: {len(failed)}"
+    dry_run_note = " [DRY-RUN - NOTHING was saved to the admin]" if dry_run else ""
+    log(
+        f"\nDone{dry_run_note}. Created: {len(created)}, updated: {len(updated)}, "
+        f"paused: {len(paused)}, unchanged: {len(skipped)}, errors: {len(failed)}"
     )
     if failed:
-        print("LP s chybou:", ", ".join(str(n) for n in failed))
+        log("LPs with errors: " + ", ".join(str(n) for n in failed))
+
+    return {
+        "domain": domain,
+        "dry_run": dry_run,
+        "created": created,
+        "updated": updated,
+        "paused": paused,
+        "skipped": skipped,
+        "failed": failed,
+    }
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--platform", default=DEFAULT_PLATFORM, choices=sorted(PLATFORMS.keys()), help="Which admin to use (default daoofleads)")
+    parser.add_argument("--offer-id", required=True, help="Offer ID in the admin")
+    parser.add_argument(
+        "--niche",
+        required=True,
+        choices=sorted(NICHE_LP_NUMBERS.keys()),
+        type=str.upper,
+        help="The offer's niche - determines the valid LP number set and niche_id",
+    )
+    parser.add_argument(
+        "--niche-id",
+        help="Force niche_id manually (overrides the value from config.py)",
+    )
+    parser.add_argument("--afid", default=DEFAULT_AFID, help=f"affiliate ID used for screenshots (default {DEFAULT_AFID})")
+    parser.add_argument("--width", type=int, default=DEFAULT_VIEWPORT["width"])
+    parser.add_argument("--height", type=int, default=DEFAULT_VIEWPORT["height"])
+    parser.add_argument("--domain", help="force the domain manually (skips deriving it from the offer title)")
+    parser.add_argument("--only-lp", type=int, help="process just one specific LP number, for testing")
+    parser.add_argument("--dry-run", action="store_true", help="only take screenshots and print the plan, don't upload/save anything to the admin")
+    parser.add_argument("--headless", action="store_true", help="run the browser without a visible window")
+    args = parser.parse_args()
+
+    try:
+        run_tool(
+            platform=args.platform,
+            offer_id=args.offer_id,
+            niche=args.niche,
+            niche_id=args.niche_id,
+            afid=args.afid,
+            width=args.width,
+            height=args.height,
+            domain=args.domain,
+            only_lp=args.only_lp,
+            dry_run=args.dry_run,
+            headless=args.headless,
+            log=print,
+        )
+    except ToolError as exc:
+        print(str(exc))
+        sys.exit(1)
 
 
 if __name__ == "__main__":

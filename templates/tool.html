@@ -1,0 +1,158 @@
+{% extends "base.html" %}
+{% block title %}LP preview tool{% endblock %}
+{% block content %}
+
+<h1>LP preview tool</h1>
+<a class="nav-link" href="/">← Login</a>
+
+<form id="run-form">
+  <fieldset>
+    <legend>2. Offer</legend>
+
+    <label>Platform
+      <select name="platform" id="platform-select">
+        {% for key, p in platforms.items() %}
+          <option value="{{ key }}" {% if key == default_platform %}selected{% endif %}>{{ p.label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+
+    <div class="row">
+      <div>
+        <label>Offer ID
+          <input type="text" name="offer_id" required>
+        </label>
+      </div>
+      <div>
+        <label>Niche
+          <select name="niche">
+            {% for n in niches %}
+              <option value="{{ n }}">{{ n }}</option>
+            {% endfor %}
+          </select>
+        </label>
+      </div>
+    </div>
+
+    <div class="checkbox-row">
+      <input type="checkbox" name="dry_run" id="dry_run" checked>
+      <label for="dry_run" style="margin:0">Dry-run (screenshots and plan only, nothing gets saved)</label>
+    </div>
+    <div class="checkbox-row">
+      <input type="checkbox" name="headless" id="headless">
+      <label for="headless" style="margin:0">Headless (no visible browser window)</label>
+    </div>
+
+    <details>
+      <summary>Advanced options</summary>
+      <div class="row">
+        <div>
+          <label>niche_id override (overrides the value from config.py)
+            <input type="text" name="niche_id">
+          </label>
+        </div>
+        <div>
+          <label>Single LP number (test)
+            <input type="number" name="only_lp">
+          </label>
+        </div>
+      </div>
+      <label>Domain override (skips deriving it from the offer title)
+        <input type="text" name="domain">
+      </label>
+      <div class="row">
+        <div><label>afid <input type="text" name="afid" value="{{ default_afid }}"></label></div>
+        <div><label>width <input type="number" name="width" value="{{ default_width }}"></label></div>
+        <div><label>height <input type="number" name="height" value="{{ default_height }}"></label></div>
+      </div>
+    </details>
+  </fieldset>
+
+  <button type="submit" class="primary" id="run-btn">Run</button>
+</form>
+
+<h3>Progress</h3>
+<div id="log">(nothing yet)</div>
+<div id="summary"></div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+heartbeat();
+setInterval(heartbeat, 4000);
+
+const form = document.getElementById("run-form");
+const logEl = document.getElementById("log");
+const summaryEl = document.getElementById("summary");
+const runBtn = document.getElementById("run-btn");
+
+form.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  runBtn.disabled = true;
+  logEl.textContent = "";
+  summaryEl.innerHTML = "";
+
+  const fd = new FormData(form);
+  const payload = {
+    platform: fd.get("platform"),
+    offer_id: fd.get("offer_id"),
+    niche: fd.get("niche"),
+    niche_id: fd.get("niche_id"),
+    only_lp: fd.get("only_lp"),
+    domain: fd.get("domain"),
+    afid: fd.get("afid"),
+    width: fd.get("width"),
+    height: fd.get("height"),
+    dry_run: fd.get("dry_run") === "on",
+    headless: fd.get("headless") === "on",
+  };
+
+  let res, data;
+  try {
+    res = await fetch("/run", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(payload)
+    });
+    data = await res.json();
+  } catch (err) {
+    offlineBanner.style.display = "block";
+    runBtn.disabled = false;
+    return;
+  }
+  if (!res.ok) {
+    logEl.textContent = "Error: " + data.error;
+    runBtn.disabled = false;
+    return;
+  }
+
+  const evtSource = new EventSource(`/stream/${data.job_id}`);
+  evtSource.onmessage = (ev) => {
+    logEl.textContent += JSON.parse(ev.data) + "\n";
+    logEl.scrollTop = logEl.scrollHeight;
+  };
+  evtSource.addEventListener("done", (ev) => {
+    const payload = JSON.parse(ev.data);
+    if (payload.result) {
+      const r = payload.result;
+      const dryRunNote = r.dry_run
+        ? `<div style="color:#b91c1c; font-weight:600; margin-bottom:0.4rem;">DRY-RUN - nothing was saved to the admin</div>`
+        : "";
+      summaryEl.innerHTML = `<div class="summary-box">
+        ${dryRunNote}
+        Domain: <strong>${r.domain}</strong><br>
+        Created: ${r.created.length} | Updated: ${r.updated.length} |
+        Paused: ${r.paused.length} | Unchanged: ${r.skipped.length} |
+        Errors: ${r.failed.length}
+      </div>`;
+    }
+    evtSource.close();
+    runBtn.disabled = false;
+  });
+  evtSource.onerror = () => {
+    evtSource.close();
+    runBtn.disabled = false;
+  };
+});
+</script>
+{% endblock %}

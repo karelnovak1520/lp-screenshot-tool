@@ -1,6 +1,9 @@
 storage_state.json
+storage_state_*.json
 screenshots/
 *.png
 .venv/
 __pycache__/
 *.pyc
+app.log
+.claude/
