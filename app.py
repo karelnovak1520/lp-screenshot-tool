@@ -17,7 +17,7 @@ import threading
 import time
 import uuid
 
-from flask import Flask, Response, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request, send_file
 
 from config import DEFAULT_AFID, DEFAULT_PLATFORM, DEFAULT_VIEWPORT, NICHE_LP_NUMBERS, PLATFORMS
 from lp_tool import ToolError, run_tool, storage_state_path
@@ -119,12 +119,21 @@ def run():
     with _jobs_lock:
         if any(not j["done"] for j in _jobs.values()):
             return jsonify({"error": "Another job is already running - wait for it to finish (deliberately only one at a time)."}), 409
-        _jobs[job_id] = {"lines": [], "done": False, "result": None, "error": None, "event": threading.Event()}
+        _jobs[job_id] = {
+            "lines": [], "screenshots": {}, "done": False, "result": None, "error": None,
+            "event": threading.Event(),
+        }
 
     def log(line: str) -> None:
         with _jobs_lock:
             job = _jobs[job_id]
             job["lines"].append(line)
+            job["event"].set()
+
+    def on_screenshot(lp_number: int, path) -> None:
+        with _jobs_lock:
+            job = _jobs[job_id]
+            job["screenshots"][lp_number] = str(path)
             job["event"].set()
 
     def worker():
@@ -142,6 +151,7 @@ def run():
                 dry_run=bool(data.get("dry_run")),
                 headless=bool(data.get("headless")),
                 log=log,
+                on_screenshot=on_screenshot,
             )
             with _jobs_lock:
                 _jobs[job_id]["result"] = result
@@ -166,6 +176,7 @@ def run():
 def stream(job_id: str):
     def generate():
         sent = 0
+        sent_screenshots = set()
         while True:
             with _jobs_lock:
                 job = _jobs.get(job_id)
@@ -174,6 +185,8 @@ def stream(job_id: str):
                     return
                 new_lines = job["lines"][sent:]
                 sent = len(job["lines"])
+                new_screenshot_lps = [lp for lp in job["screenshots"] if lp not in sent_screenshots]
+                sent_screenshots.update(new_screenshot_lps)
                 done = job["done"]
                 result = job["result"]
                 error = job["error"]
@@ -181,6 +194,8 @@ def stream(job_id: str):
 
             for line in new_lines:
                 yield f"data: {json.dumps(line)}\n\n"
+            for lp in new_screenshot_lps:
+                yield f"event: screenshot\ndata: {json.dumps({'lp': lp})}\n\n"
 
             if done:
                 payload = {"result": result, "error": error}
@@ -191,6 +206,16 @@ def stream(job_id: str):
             time.sleep(0.05)
 
     return Response(generate(), mimetype="text/event-stream")
+
+
+@app.route("/screenshot/<job_id>/<int:lp_number>")
+def screenshot(job_id: str, lp_number: int):
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        path = job["screenshots"].get(lp_number) if job else None
+    if not path:
+        return "", 404
+    return send_file(path, mimetype="image/png")
 
 
 if __name__ == "__main__":

@@ -75,6 +75,11 @@
 <div id="log">(nothing yet)</div>
 <div id="summary"></div>
 
+<div id="screenshots-section" style="display:none">
+  <h3>Preview (dry-run)</h3>
+  <div id="screenshots"></div>
+</div>
+
 {% endblock %}
 
 {% block scripts %}
@@ -86,12 +91,16 @@ const form = document.getElementById("run-form");
 const logEl = document.getElementById("log");
 const summaryEl = document.getElementById("summary");
 const runBtn = document.getElementById("run-btn");
+const screenshotsSection = document.getElementById("screenshots-section");
+const screenshotsEl = document.getElementById("screenshots");
 
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
   runBtn.disabled = true;
   logEl.textContent = "";
   summaryEl.innerHTML = "";
+  screenshotsEl.innerHTML = "";
+  screenshotsSection.style.display = "none";
 
   const fd = new FormData(form);
   const payload = {
@@ -126,11 +135,25 @@ form.addEventListener("submit", async (e) => {
     return;
   }
 
-  const evtSource = new EventSource(`/stream/${data.job_id}`);
+  const jobId = data.job_id;
+  const evtSource = new EventSource(`/stream/${jobId}`);
   evtSource.onmessage = (ev) => {
     logEl.textContent += JSON.parse(ev.data) + "\n";
     logEl.scrollTop = logEl.scrollHeight;
   };
+  evtSource.addEventListener("screenshot", (ev) => {
+    const { lp } = JSON.parse(ev.data);
+    screenshotsSection.style.display = "block";
+    const card = document.createElement("div");
+    card.className = "screenshot-card";
+    card.innerHTML = `
+      <a href="/screenshot/${jobId}/${lp}" target="_blank">
+        <img src="/screenshot/${jobId}/${lp}?t=${Date.now()}" alt="LP${lp}">
+      </a>
+      <span>LP${lp}</span>
+    `;
+    screenshotsEl.appendChild(card);
+  });
   evtSource.addEventListener("done", (ev) => {
     const payload = JSON.parse(ev.data);
     if (payload.result) {

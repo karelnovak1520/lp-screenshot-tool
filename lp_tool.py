@@ -116,6 +116,22 @@ def dismiss_overlays(page: Page) -> None:
             continue
 
 
+def freeze_blinking_elements(page: Page) -> None:
+    """Some LPs (e.g. the dating-service.info template family) use a
+    `.blink` CSS class on the registration/login button, animated via
+    `animation: 1s steps(1, start) infinite blink-animation` with a
+    keyframe that sets `color: transparent` at 50% - i.e. the button's text
+    disappears for half of every one-second cycle. A screenshot taken at a
+    random moment has a coin-flip chance of catching it mid-blink with
+    invisible text. Injecting a stylesheet that disables the animation
+    freezes it on its normal (visible) resting color, regardless of when
+    the screenshot happens to be taken."""
+    try:
+        page.add_style_tag(content=".blink { animation: none !important; }")
+    except Exception:
+        pass
+
+
 def screenshot_lp(browser, domain: str, path: str, afid: str, viewport: dict) -> Path:
     url = f"https://{domain}{path}?afid={afid}"
 
@@ -129,6 +145,7 @@ def screenshot_lp(browser, domain: str, path: str, afid: str, viewport: dict) ->
         pass
     dismiss_overlays(page)
     page.wait_for_timeout(500)
+    freeze_blinking_elements(page)
 
     out_path = Path(tempfile.gettempdir()) / f"lp-screenshot-{uuid.uuid4().hex}.png"
     page.screenshot(path=str(out_path))
@@ -261,10 +278,14 @@ def run_tool(
     dry_run: bool = False,
     headless: bool = False,
     log=print,
+    on_screenshot=None,
 ) -> dict:
     """The tool's main logic, callable both from the CLI (main()) and from
     the web app. Logs progress through the `log(text)` callback and returns
-    a result summary. Raises ToolError for fatal errors (missing login,
+    a result summary. When `dry_run` is on, calls `on_screenshot(lp_number,
+    path)` for every screenshot taken, so a caller (the web app) can show a
+    live preview - dry-run screenshots aren't deleted, unlike a real run's,
+    which get removed right after upload. Raises ToolError for fatal errors (missing login,
     invalid niche, unrecognized domain) - that should stop the whole run,
     as opposed to a single LP's error, which just gets logged and the run
     continues."""
@@ -361,6 +382,8 @@ def run_tool(
                 log(f"  screenshot: {screenshot_path}")
 
                 if dry_run:
+                    if on_screenshot:
+                        on_screenshot(lp_number, screenshot_path)
                     (updated if action == "edit" else created).append(lp_number)
                     continue
 
