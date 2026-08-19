@@ -1,0 +1,413 @@
+{% extends "base.html" %}
+{% block title %}Tracking Link Generator{% endblock %}
+{% block content %}
+
+<h1>Tracking Link Generator</h1>
+<a class="nav-link" href="/">← Home</a>
+<a class="nav-link" href="/tool">LP tool →</a>
+
+<div id="india-overlay" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:1000; align-items:center; justify-content:center;">
+  <div style="background:#fff; border-radius:8px; padding:1.5rem; max-width:420px; box-shadow:0 10px 30px rgba(0,0,0,0.3);">
+    <h2 style="margin-top:0; color:#b91c1c;">⚠️ Indian offer</h2>
+    <p id="india-overlay-text" style="font-size:0.95rem;"></p>
+    <p style="font-size:0.9rem;">This offer's tracking link format is completely different from the normal one. Whoever is running this tool needs to pull the link manually from the affiliate account - it will NOT be generated here.</p>
+    <button type="button" id="india-overlay-ok" class="primary">Understood</button>
+  </div>
+</div>
+
+<fieldset>
+  <legend>Login status</legend>
+  <div id="platform-statuses"></div>
+  <p style="font-size: 0.85rem; color: #555;">
+    The offer list below refreshes automatically every time you log in.
+    Last synced - DAO: <span id="synced-dao">-</span>, 69cash: <span id="synced-69cash">-</span>
+    <button type="button" id="refresh-btn" style="margin-left: 0.5rem;">Refresh now</button>
+  </p>
+</fieldset>
+
+<form id="run-form">
+  <div id="step-1">
+    <fieldset>
+      <legend id="affid-legend" style="transition: color 0.2s;">1. Affiliate ID</legend>
+      <div style="display:flex; gap:0.6rem; align-items:flex-end;">
+        <label style="flex:1; margin-top:0;">Affiliate ID
+          <input type="text" name="aff_id" id="aff-id-input" value="{{ default_afid }}" required autocomplete="off">
+        </label>
+        <button type="button" id="lock-affid-btn">Confirm &amp; lock</button>
+      </div>
+      <p id="affid-locked-note" style="display:none; color:#166534; font-weight:600; font-size:0.85rem;">🔒 Locked - click "Unlock" if this needs to change.</p>
+      <p style="font-size:0.8rem; color:#888;">Double-check this is your <strong>affiliate ID</strong>, not an offer ID, before locking it.</p>
+    </fieldset>
+
+    <fieldset>
+      <legend>2. Tracking link (example)</legend>
+      <label>Paste any real example link from this tracking platform (with real numbers in it is fine, e.g. <code>https://hubaffillink.eu/?aff_id=22513&amp;offer_id=13923</code>) - the aff_id and offer_id values get replaced automatically for each offer on the next step
+        <input type="text" name="template" placeholder="https://hubaffillink.eu/?aff_id=22513&offer_id=13923" required>
+      </label>
+      <p style="font-size: 0.8rem; color: #555;">
+        Every link automatically gets <code>{{ tracking_link_suffix }}</code> appended - required by the network to pass through the click ID and traffic source. This is fixed and always added, you don't need to type it.
+      </p>
+    </fieldset>
+
+    <button type="button" class="primary" id="next-btn">Next →</button>
+  </div>
+
+  <div id="step-2" style="display:none;">
+    <a class="nav-link" href="#" id="back-btn">← Back</a>
+    <fieldset>
+      <legend>3. Offer ID(s)</legend>
+      <label>Source
+        <select id="source-select">
+          {% for s in link_sources %}
+            <option value="{{ s.source }}">{{ s.label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Search by OFID or name (press Enter to add without clicking)
+        <input type="text" id="search-input" placeholder="e.g. 16793 or coquetear">
+      </label>
+      <div id="search-results" style="max-height: 240px; overflow-y: auto; margin-top: 0.6rem; border: 1px solid #ddd; border-radius: 4px;"></div>
+      <p style="font-size: 0.85rem; color: #555; margin-top: 0.4rem;">
+        Can't find it? It might be brand new - type its exact OFID above and press Enter to look it up live instead.
+      </p>
+
+      <label style="margin-top: 1rem;">Selected</label>
+      <div id="selected-list" style="font-size: 0.9rem;">(none yet)</div>
+    </fieldset>
+
+    <button type="submit" class="primary" id="run-btn">Generate</button>
+
+    <h3>Results</h3>
+    <div style="display:flex; gap:0.5rem; margin-bottom:0.4rem;">
+      <button type="button" id="clear-results-btn">Clear results</button>
+      <button type="button" id="start-over-btn">Start over</button>
+    </div>
+    <div id="link-results" style="background:#fafafa; border:1px solid #ddd; border-radius:6px; padding:1rem; font-size:0.92rem; line-height:1.6; min-height:100px;">(nothing yet)</div>
+    <div style="display:flex; justify-content:flex-end; margin-top:0.4rem;">
+      <button type="button" id="copy-results-btn">Copy all</button>
+    </div>
+  </div>
+</form>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+const platforms = {{ platforms | tojson }};
+createLoginWidget("platform-statuses", platforms);
+
+let cache = { offers: [], syncedAt: {} };
+let selected = []; // list of {ofid, title, source, country, flag}
+
+function escapeHtml(s) {
+  return (s || "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
+function flagPrefix(o) {
+  if (!o.country) return "";
+  return `${o.flag ? o.flag + " " : ""}${escapeHtml(o.country.toUpperCase())} - `;
+}
+
+function isIndia(o) {
+  return (o.country || "").trim().toUpperCase() === "INDIA";
+}
+
+// --- India overlay ---
+const indiaOverlay = document.getElementById("india-overlay");
+document.getElementById("india-overlay-ok").addEventListener("click", () => {
+  indiaOverlay.style.display = "none";
+});
+function showIndiaOverlay(offer) {
+  document.getElementById("india-overlay-text").textContent =
+    `[${offer.ofid}] ${offer.title}`;
+  indiaOverlay.style.display = "flex";
+}
+
+// --- Affiliate ID lock ---
+const affIdInput = document.getElementById("aff-id-input");
+const lockAffidBtn = document.getElementById("lock-affid-btn");
+const affidLegend = document.getElementById("affid-legend");
+const affidLockedNote = document.getElementById("affid-locked-note");
+let affidLocked = false;
+
+function unlockAffId() {
+  affidLocked = false;
+  affIdInput.readOnly = false;
+  affIdInput.style.background = "";
+  affIdInput.style.borderColor = "";
+  affIdInput.style.fontWeight = "";
+  affidLegend.style.color = "";
+  affidLegend.textContent = "1. Affiliate ID";
+  lockAffidBtn.textContent = "Confirm & lock";
+  affidLockedNote.style.display = "none";
+}
+
+lockAffidBtn.addEventListener("click", () => {
+  if (!affidLocked) {
+    if (!affIdInput.value.trim()) { alert("Enter an affiliate ID first."); return; }
+    affidLocked = true;
+    affIdInput.readOnly = true;
+    affIdInput.style.background = "#fef9c3";
+    affIdInput.style.borderColor = "#ca8a04";
+    affIdInput.style.fontWeight = "700";
+    affidLegend.style.color = "#b45309";
+    affidLegend.textContent = `1. Affiliate ID — LOCKED: ${affIdInput.value.trim()}`;
+    lockAffidBtn.textContent = "Unlock";
+    affidLockedNote.style.display = "block";
+  } else {
+    unlockAffId();
+  }
+});
+
+// --- Step navigation ---
+const step1 = document.getElementById("step-1");
+const step2 = document.getElementById("step-2");
+document.getElementById("next-btn").addEventListener("click", () => {
+  if (!affIdInput.value.trim() || !document.querySelector('input[name="template"]').value.trim()) {
+    alert("Fill in the affiliate ID and a tracking link example first.");
+    return;
+  }
+  step1.style.display = "none";
+  step2.style.display = "block";
+});
+document.getElementById("back-btn").addEventListener("click", (e) => {
+  e.preventDefault();
+  step2.style.display = "none";
+  step1.style.display = "block";
+});
+
+function renderSyncedAt() {
+  for (const source of ["dao", "69cash"]) {
+    const el = document.getElementById(`synced-${source}`);
+    if (el) el.textContent = cache.syncedAt[source] ? new Date(cache.syncedAt[source]).toLocaleString() : "never";
+  }
+}
+
+async function loadCache() {
+  const res = await fetch("/links/offers");
+  cache = await res.json();
+  renderSyncedAt();
+  renderResults();
+}
+
+function renderSelected() {
+  const el = document.getElementById("selected-list");
+  if (selected.length === 0) {
+    el.textContent = "(none yet)";
+    return;
+  }
+  el.innerHTML = selected.map((o, i) => `
+    <div style="display:flex; justify-content:space-between; align-items:center; padding:0.2rem 0;">
+      <span>[${o.ofid}] ${flagPrefix(o)}${escapeHtml(o.title)} (${o.source})</span>
+      <button type="button" data-remove="${i}" style="padding:0.1rem 0.5rem;">Remove</button>
+    </div>
+  `).join("");
+  el.querySelectorAll("[data-remove]").forEach(btn => {
+    btn.onclick = () => { selected.splice(Number(btn.dataset.remove), 1); renderSelected(); };
+  });
+}
+
+// Single entry point for adding an offer to the selection - always routes
+// through the India check, whether it came from a click or the Enter key.
+function trySelectOffer(offer) {
+  if (isIndia(offer)) {
+    showIndiaOverlay(offer);
+    return;
+  }
+  if (!selected.some(o => o.ofid === offer.ofid && o.source === offer.source)) {
+    selected.push(offer);
+    renderSelected();
+  }
+}
+
+function renderResults() {
+  const source = document.getElementById("source-select").value;
+  const query = document.getElementById("search-input").value.trim().toLowerCase();
+  const resultsEl = document.getElementById("search-results");
+  if (!query) { resultsEl.innerHTML = ""; return; }
+
+  const matches = cache.offers
+    .filter(o => o.source === source)
+    .filter(o => o.ofid.includes(query) || o.title.toLowerCase().includes(query))
+    .slice(0, 50);
+
+  if (matches.length === 0) {
+    resultsEl.innerHTML = `<div style="padding:0.5rem; font-size:0.85rem; color:#888;">No matches in the local list.</div>`;
+    return;
+  }
+  resultsEl.innerHTML = matches.map(o => `
+    <div class="search-result" data-ofid="${o.ofid}" style="padding:0.4rem 0.6rem; cursor:pointer; border-bottom:1px solid #eee; font-size:0.85rem;">
+      <strong>${o.ofid}</strong> ${flagPrefix(o)}${escapeHtml(o.title)}
+      ${o.status && o.status !== "active" ? `<span style="color:#b91c1c;"> (${o.status})</span>` : ""}
+      ${isIndia(o) ? `<span style="color:#b91c1c; font-weight:600;"> ⚠️ INDIA</span>` : ""}
+    </div>
+  `).join("");
+  resultsEl.querySelectorAll(".search-result").forEach(row => {
+    row.onmouseover = () => row.style.background = "#f0f7ff";
+    row.onmouseout = () => row.style.background = "";
+    row.onclick = () => {
+      const offer = matches.find(o => o.ofid === row.dataset.ofid);
+      trySelectOffer(offer);
+    };
+  });
+}
+
+document.getElementById("source-select").addEventListener("change", renderResults);
+document.getElementById("search-input").addEventListener("input", renderResults);
+document.getElementById("search-input").addEventListener("keydown", (e) => {
+  if (e.key !== "Enter") return;
+  e.preventDefault();
+  const query = e.target.value.trim();
+  const source = document.getElementById("source-select").value;
+  if (!query) return;
+
+  // Prefer a real cache match (exact OFID, or the one row currently shown)
+  // over a blind "will look up later" placeholder, so Enter behaves the
+  // same as clicking a result whenever we can tell what was meant.
+  const currentMatches = cache.offers
+    .filter(o => o.source === source)
+    .filter(o => o.ofid.includes(query.toLowerCase()) || o.title.toLowerCase().includes(query.toLowerCase()));
+  const exact = currentMatches.find(o => o.ofid === query) || (currentMatches.length === 1 ? currentMatches[0] : null);
+
+  if (exact) {
+    trySelectOffer(exact);
+  } else {
+    // Not in the cache - add it directly; /links/run looks it up live.
+    trySelectOffer({ ofid: query, title: "(will look up when generating)", source, country: null, flag: null });
+  }
+  e.target.value = "";
+  renderResults();
+  e.target.focus();
+});
+
+document.getElementById("refresh-btn").addEventListener("click", async () => {
+  const platform = document.getElementById("source-select").value === "dao" ? "daoofleads" : "imaxcash";
+  const btn = document.getElementById("refresh-btn");
+  btn.disabled = true;
+  btn.textContent = "Refreshing...";
+  try {
+    const res = await fetch("/links/sync", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ platform }),
+    });
+    const data = await res.json();
+    if (!res.ok) alert("Error: " + data.error);
+  } catch (err) {
+    offlineBanner.style.display = "block";
+  }
+  btn.disabled = false;
+  btn.textContent = "Refresh now";
+  loadCache();
+});
+
+const form = document.getElementById("run-form");
+const resultsEl = document.getElementById("link-results");
+const runBtn = document.getElementById("run-btn");
+const footerNote = {{ link_footer_note | tojson }};
+
+form.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  if (selected.length === 0) {
+    alert("Select at least one offer first.");
+    return;
+  }
+  runBtn.disabled = true;
+  runBtn.textContent = "Generating...";
+  resultsEl.textContent = "";
+
+  const fd = new FormData(form);
+  // All selected offers might not share the same source/platform - group by
+  // source and run each group against its own platform.
+  const bySource = {};
+  for (const o of selected) (bySource[o.source] ||= []).push(o.ofid);
+
+  let allResults = [];
+  let errors = [];
+  for (const [source, offerIds] of Object.entries(bySource)) {
+    const platform = source === "dao" ? "daoofleads" : "imaxcash";
+    try {
+      const res = await fetch("/links/run", {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          platform, aff_id: fd.get("aff_id"), template: fd.get("template"),
+          offer_ids: offerIds.join(","),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) { errors.push(data.error); continue; }
+      allResults = allResults.concat(data.results);
+    } catch (err) {
+      offlineBanner.style.display = "block";
+      runBtn.disabled = false;
+      runBtn.textContent = "Generate";
+      return;
+    }
+  }
+
+  runBtn.disabled = false;
+  runBtn.textContent = "Generate";
+
+  if (errors.length) {
+    resultsEl.textContent = "Error: " + errors.join("; ");
+    return;
+  }
+
+  // Plain selectable text/links, like the reference tracking-link app -
+  // not input boxes, so a normal click-drag or triple-click selects and
+  // copies the whole thing.
+  const rows = allResults.map(r => {
+    const countryTag = r.country ? `${r.flag ? r.flag + " " : ""}${escapeHtml(r.country.toUpperCase())} - ` : "";
+    if (r.error) {
+      return `<div style="margin-bottom:1rem; color:#b91c1c;"><strong>${r.offer_id}</strong> - ${countryTag}${escapeHtml(r.title || "")} - ERROR: ${escapeHtml(r.error)}</div>`;
+    }
+    const cacheTag = r.from_cache ? "" : ` <span style="color:#b45309;">(live lookup, not yet in cache)</span>`;
+    return `<div style="margin-bottom:1rem;">
+      <div>${r.offer_id} - ${countryTag}${escapeHtml(r.title)}${cacheTag}</div>
+      <a href="${escapeHtml(r.link)}" style="word-break:break-all;">${escapeHtml(r.link)}</a>
+    </div>`;
+  }).join("");
+  // Plain <div>s with white-space:pre-wrap, not <hr>/<pre> - a copy-paste
+  // into a rich text box (chat apps, docs) tends to turn <pre> into a code
+  // block and drop <hr> entirely (no dashes survive the paste), neither of
+  // which is what should end up on the clipboard here.
+  resultsEl.innerHTML = (rows || "(no results)") +
+    `<div style="margin:1rem 0;">------------------------------------------</div>` +
+    `<div style="white-space:pre-wrap; font-weight:600;">${escapeHtml(footerNote)}</div>`;
+});
+
+document.getElementById("clear-results-btn").addEventListener("click", () => {
+  resultsEl.innerHTML = "(nothing yet)";
+});
+
+document.getElementById("start-over-btn").addEventListener("click", () => {
+  selected = [];
+  renderSelected();
+  resultsEl.innerHTML = "(nothing yet)";
+  form.reset();
+  if (affidLocked) unlockAffId();
+  document.getElementById("search-input").value = "";
+  document.getElementById("search-results").innerHTML = "";
+  step2.style.display = "none";
+  step1.style.display = "block";
+});
+
+document.getElementById("copy-results-btn").addEventListener("click", async () => {
+  const btn = document.getElementById("copy-results-btn");
+  const text = resultsEl.innerText.trim();
+  if (!text || text === "(nothing yet)") {
+    alert("Nothing to copy yet - generate some links first.");
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+    const original = btn.textContent;
+    btn.textContent = "Copied!";
+    setTimeout(() => { btn.textContent = original; }, 1500);
+  } catch (err) {
+    alert("Couldn't copy automatically - select the text manually instead.");
+  }
+});
+
+loadCache();
+</script>
+{% endblock %}

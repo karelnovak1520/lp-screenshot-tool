@@ -1,0 +1,273 @@
+{% extends "base.html" %}
+{% block title %}LP preview tool{% endblock %}
+{% block content %}
+
+<h1>LP preview tool</h1>
+<a class="nav-link" href="/">← Home</a>
+<a class="nav-link" href="/links">Tracking links →</a>
+
+<div id="wrong-platform-overlay" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:1000; align-items:center; justify-content:center;">
+  <div style="background:#fff; border-radius:8px; padding:1.5rem; max-width:420px; box-shadow:0 10px 30px rgba(0,0,0,0.3);">
+    <h2 style="margin-top:0; color:#b91c1c;">⚠️ Wrong platform?</h2>
+    <p id="wrong-platform-overlay-text" style="font-size:0.95rem;"></p>
+    <p style="font-size:0.9rem;">Each platform is a separate admin account with its own offers - this one probably belongs to a different platform than the one selected. Pick the right one from the Platform dropdown and try again.</p>
+    <button type="button" id="wrong-platform-overlay-ok" class="primary">Understood</button>
+  </div>
+</div>
+
+<fieldset>
+  <legend>Login status</legend>
+  <div id="platform-statuses"></div>
+</fieldset>
+
+<form id="run-form">
+  <fieldset>
+    <legend>Offer</legend>
+
+    <label>Platform
+      <select name="platform" id="platform-select">
+        {% for key, p in platforms.items() %}
+          <option value="{{ key }}" {% if key == default_platform %}selected{% endif %}>{{ p.label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+
+    <div class="row">
+      <div>
+        <label>Offer ID
+          <input type="text" name="offer_id" required>
+        </label>
+      </div>
+      <div>
+        <label>Niche
+          <select name="niche">
+            <option value="">(auto-detect from title)</option>
+            {% for n in niches %}
+              <option value="{{ n }}">{{ n }}</option>
+            {% endfor %}
+          </select>
+        </label>
+      </div>
+    </div>
+
+    <div class="checkbox-row">
+      <input type="checkbox" name="dry_run" id="dry_run" checked>
+      <label for="dry_run" style="margin:0">Dry-run (screenshots and plan only, nothing gets saved)</label>
+    </div>
+    <div class="checkbox-row">
+      <input type="checkbox" name="headless" id="headless">
+      <label for="headless" style="margin:0">Headless (no visible browser window)</label>
+    </div>
+
+    <details>
+      <summary>Advanced options</summary>
+      <div class="row">
+        <div>
+          <label>niche_id override (overrides the value from config.py)
+            <input type="text" name="niche_id">
+          </label>
+        </div>
+        <div>
+          <label>Single LP number (test)
+            <input type="number" name="only_lp">
+          </label>
+        </div>
+      </div>
+      <label>Domain override (skips deriving it from the offer title)
+        <input type="text" name="domain">
+      </label>
+      <div class="row">
+        <div><label>afid <input type="text" name="afid" value="{{ default_afid }}"></label></div>
+        <div><label>width <input type="number" name="width" value="{{ default_width }}"></label></div>
+        <div><label>height <input type="number" name="height" value="{{ default_height }}"></label></div>
+      </div>
+    </details>
+  </fieldset>
+
+  <div id="pre-run-login" style="margin: 1rem 0; padding: 0.8rem; background:#eff6ff; border:1px solid #bfdbfe; border-radius:6px;">
+    <div style="font-weight:600; margin-bottom:0.4rem;">Log in before you run</div>
+    <div id="pre-run-login-status">-</div>
+  </div>
+
+  <button type="submit" class="primary" id="run-btn">Run</button>
+</form>
+
+<h3>Progress</h3>
+<div id="log">(nothing yet)</div>
+<div id="summary"></div>
+
+<div id="screenshots-section" style="display:none">
+  <h3>Preview (dry-run)</h3>
+  <div id="screenshots"></div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+const platforms = {{ platforms | tojson }};
+createLoginWidget("platform-statuses", platforms);
+
+const platformSelect = document.getElementById("platform-select");
+const preRunLoginStatusEl = document.getElementById("pre-run-login-status");
+
+// A second, compact login status/button scoped to whichever platform is
+// currently selected for the run - so logging in doesn't require scrolling
+// back up to the full "Login status" list above. Logging in here uses the
+// exact same /login/start + /login/confirm flow (a dedicated Chromium
+// window opens, and clicking "Done, save session" is what actually writes
+// storage_state_<platform>.json) - unlike the tool's own Run browser
+// window (visible only when Headless is off), which is just the
+// automation doing its scraping/editing and never saves a login.
+async function refreshPreRunLogin() {
+  const key = platformSelect.value;
+  let statuses;
+  try {
+    const res = await fetch("/login-status");
+    statuses = await res.json();
+  } catch (err) {
+    return;
+  }
+  const st = statuses[key];
+  const dotClass = st.in_progress ? "wait" : (st.logged_in ? "ok" : "no");
+  const label = st.in_progress ? "waiting for login confirmation..." : (st.logged_in ? "logged in" : "not logged in");
+  preRunLoginStatusEl.innerHTML = `
+    <span class="dot ${dotClass}"></span>
+    <strong>${platforms[key].label}</strong> - ${label}
+    ${st.in_progress
+      ? `<button type="button" id="pre-run-confirm-btn">Done, save session</button>`
+      : `<button type="button" id="pre-run-start-btn">${st.logged_in ? "Log in again" : "Log in"}</button>`}
+  `;
+  const startBtn = document.getElementById("pre-run-start-btn");
+  if (startBtn) {
+    startBtn.onclick = async () => {
+      try {
+        await fetch("/login/start", {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({platform: key}),
+        });
+      } catch (err) { offlineBanner.style.display = "block"; return; }
+      refreshPreRunLogin();
+    };
+  }
+  const confirmBtn = document.getElementById("pre-run-confirm-btn");
+  if (confirmBtn) {
+    confirmBtn.onclick = async () => {
+      try {
+        await fetch("/login/confirm", {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({platform: key}),
+        });
+      } catch (err) { offlineBanner.style.display = "block"; return; }
+      refreshPreRunLogin();
+    };
+  }
+}
+platformSelect.addEventListener("change", refreshPreRunLogin);
+refreshPreRunLogin();
+setInterval(refreshPreRunLogin, 4000);
+
+const wrongPlatformOverlay = document.getElementById("wrong-platform-overlay");
+document.getElementById("wrong-platform-overlay-ok").addEventListener("click", () => {
+  wrongPlatformOverlay.style.display = "none";
+});
+function showWrongPlatformOverlay(message) {
+  document.getElementById("wrong-platform-overlay-text").textContent = message;
+  wrongPlatformOverlay.style.display = "flex";
+}
+
+const form = document.getElementById("run-form");
+const logEl = document.getElementById("log");
+const summaryEl = document.getElementById("summary");
+const runBtn = document.getElementById("run-btn");
+const screenshotsSection = document.getElementById("screenshots-section");
+const screenshotsEl = document.getElementById("screenshots");
+
+form.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  runBtn.disabled = true;
+  logEl.textContent = "";
+  summaryEl.innerHTML = "";
+  screenshotsEl.innerHTML = "";
+  screenshotsSection.style.display = "none";
+
+  const fd = new FormData(form);
+  const payload = {
+    platform: fd.get("platform"),
+    offer_id: fd.get("offer_id"),
+    niche: fd.get("niche"),
+    niche_id: fd.get("niche_id"),
+    only_lp: fd.get("only_lp"),
+    domain: fd.get("domain"),
+    afid: fd.get("afid"),
+    width: fd.get("width"),
+    height: fd.get("height"),
+    dry_run: fd.get("dry_run") === "on",
+    headless: fd.get("headless") === "on",
+  };
+
+  let res, data;
+  try {
+    res = await fetch("/run", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(payload)
+    });
+    data = await res.json();
+  } catch (err) {
+    offlineBanner.style.display = "block";
+    runBtn.disabled = false;
+    return;
+  }
+  if (!res.ok) {
+    logEl.textContent = "Error: " + data.error;
+    runBtn.disabled = false;
+    return;
+  }
+
+  const jobId = data.job_id;
+  const evtSource = new EventSource(`/stream/${jobId}`);
+  evtSource.onmessage = (ev) => {
+    logEl.textContent += JSON.parse(ev.data) + "\n";
+    logEl.scrollTop = logEl.scrollHeight;
+  };
+  evtSource.addEventListener("screenshot", (ev) => {
+    const { lp } = JSON.parse(ev.data);
+    screenshotsSection.style.display = "block";
+    const card = document.createElement("div");
+    card.className = "screenshot-card";
+    card.innerHTML = `
+      <a href="/screenshot/${jobId}/${lp}" target="_blank">
+        <img src="/screenshot/${jobId}/${lp}?t=${Date.now()}" alt="LP${lp}">
+      </a>
+      <span>LP${lp}</span>
+    `;
+    screenshotsEl.appendChild(card);
+  });
+  evtSource.addEventListener("done", (ev) => {
+    const payload = JSON.parse(ev.data);
+    if (payload.result) {
+      const r = payload.result;
+      const dryRunNote = r.dry_run
+        ? `<div style="color:#b91c1c; font-weight:600; margin-bottom:0.4rem;">DRY-RUN - nothing was saved to the admin</div>`
+        : "";
+      summaryEl.innerHTML = `<div class="summary-box">
+        ${dryRunNote}
+        Domain: <strong>${r.domain}</strong><br>
+        Created: ${r.created.length} | Updated: ${r.updated.length} |
+        Paused: ${r.paused.length} | Unchanged: ${r.skipped.length} |
+        Errors: ${r.failed.length}
+      </div>`;
+    }
+    if (payload.error && payload.error.toLowerCase().includes("permission denied")) {
+      showWrongPlatformOverlay(payload.error);
+    }
+    evtSource.close();
+    runBtn.disabled = false;
+  });
+  evtSource.onerror = () => {
+    evtSource.close();
+    runBtn.disabled = false;
+  };
+});
+</script>
+{% endblock %}

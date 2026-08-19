@@ -1,28 +1,40 @@
-"""Sdílená konfigurace a pomocné funkce pro lp_tool.py."""
+"""Shared configuration and helper functions for lp_tool.py."""
 
 from __future__ import annotations
 
-import json
 import re
-from pathlib import Path
 from urllib.parse import urlsplit
 
-ADMIN_BASE = "https://affiliates.daoofleads.com"
-OFFERS_JSON = Path(__file__).parent.parent.parent / "data" / "offers.json"
+PLATFORMS: dict[str, dict[str, str]] = {
+    "daoofleads": {
+        "label": "DaoOfLeads",
+        "admin_base": "https://affiliates.daoofleads.com",
+        "storage_state_filename": "storage_state_daoofleads.json",
+    },
+    "imaxcash": {
+        "label": "ImaxCash",
+        "admin_base": "https://affiliates.imaxcash.com",
+        "storage_state_filename": "storage_state_imaxcash.json",
+    },
+    "onlinedatingkings": {
+        "label": "OnlineDatingKings",
+        "admin_base": "https://affiliates.onlinedatingkings.com",
+        "storage_state_filename": "storage_state_onlinedatingkings.json",
+    },
+}
+DEFAULT_PLATFORM = "daoofleads"
 
 DEFAULT_AFID = "2792"
 DEFAULT_VIEWPORT = {"width": 1250, "height": 825}
 
-# Platná LP čísla a niche_id pro každou niche (zadání sekce 2). Trans nemá
-# potvrzené niche_id - dokud ho uživatel neurčí, tool na tuto niche odmítne
-# běžet bez explicitního --niche-id.
+# Valid LP numbers and niche_id for each niche.
 NICHE_LP_NUMBERS: dict[str, list[int]] = {
     "ADULT": [1, 2, 3, 4, 5, 10, 15, 17, 20],
     "FLIRT": [1, 2, 4, 5, 9, 10, 15, 17, 20],
     "BDSM": [1, 2, 3, 4, 5, 9, 10, 15, 17],
     "MILF": [1, 2, 3, 4, 5, 9, 10, 17, 20],
     "SENIOR": [1, 2, 3, 5, 9, 10, 15, 17, 20],
-    "TRANS": [10, 20],
+    "TRANS": [10, 17],
 }
 
 NICHE_IDS: dict[str, str | None] = {
@@ -31,23 +43,25 @@ NICHE_IDS: dict[str, str | None] = {
     "BDSM": "3",
     "MILF": "4",
     "SENIOR": "6",
-    "TRANS": None,  # neznámé/nepotvrzené - viz zadání sekce 2
+    "TRANS": "10",  # confirmed from real data (hledasetrans.cz, /lp/10/4/10/ and /lp/17/4/10/)
 }
 
-# Druhý segment cesty LP je u nově zapisovaných/opravovaných záznamů vždy
-# fixně "4", bez ohledu na niche (starší záznamy mívají "0" - ty se přepisem
-# opraví na "4").
+# The second path segment is always fixed to "4" for newly written/fixed
+# records, regardless of niche (older records sometimes have "0" - those get
+# rewritten to "4").
 LP_FORM_SEGMENT = "4"
 
-# Texty tlačítek pro odbavení věkové brány (self-declaration "jsem 18+"),
-# ve všech jazycích, na které jsme dosud narazili. Zkouší se v tomto pořadí,
-# každý match se klikne (best effort - když text nenajde, jde dál).
+# Button texts for dismissing the age gate (self-declaration "I'm 18+"), in
+# every language we've run into so far. Tried in this order, every match
+# gets clicked (best effort - if a text isn't found, it just moves on).
 #
-# Cookie lišty se NEŘEŠÍ přes tenhle seznam - ty se odbavují obecně podle
-# zmínky slova "cookie" (viz dismiss_overlays() v lp_tool.py), protože tam
-# nezáleží na volbě accept/reject a udržovat překlady do desítek jazyků by
-# byla zbytečná práce navíc. U age gate ale špatná volba znamená odchod na
-# "jsem nezletilý" stránku, takže tam přesný seznam zůstává.
+# The cookie banner is NOT handled through a text list like this one - it's
+# dismissed generically based on the word "cookie" appearing in a dialog
+# (see dismiss_overlays() in lp_tool.py), because accept-vs-reject doesn't
+# matter there and maintaining translations for dozens of languages would be
+# wasted effort. For the age gate, picking wrong means leaving to an "I'm
+# underage" page instead of just a differently-worded banner, so an exact
+# list stays here.
 AGE_GATE_BUTTON_TEXTS = [
     "Ho 18 anni o più",  # IT
     "Tengo 18 años o más",  # ES
@@ -66,9 +80,9 @@ AGE_GATE_BUTTON_TEXTS = [
     "Мне 18 лет или больше",  # RU
 ]
 
-# Fallback, když se nenajde žádný z přesných textů výše (zadání sekce 10) -
-# hledá se klíčové slovo v textu klikatelných prvků (case-insensitive).
-# Použije se jen jako záloha a klikne se maximálně na první nalezenou shodu.
+# Fallback for when none of the exact texts above match - looks for a
+# keyword in the text of clickable elements (case-insensitive). Used only as
+# a last resort, and clicks at most the first match found.
 DISMISS_FALLBACK_KEYWORDS = ["18", "adult", "yes", "entrar", "confirmo", "tengo"]
 
 
@@ -78,16 +92,16 @@ _TITLE_LP_NUMBER_RE = re.compile(r"^LP0*(\d+)", re.IGNORECASE)
 
 
 def looks_like_domain(value: str) -> bool:
-    """Nejsou tam mezery/lomítka a má to tvar něco.něco (např. sexkontakt.com)."""
+    """No spaces/slashes, shaped like something.something (e.g. sexkontakt.com)."""
     return bool(_DOMAIN_RE.match(value.strip()))
 
 
 def normalize_domain(domain: str) -> str:
-    """"Holé" domény (jen název.tld, např. erotickykontakt.cz) na reálně
-    fungujících LP potřebují "www." prefix - ověřeno ručně na potrestajma.sk,
-    flirteouruguayo.com, mojemilfka.cz, zralalaska.cz, hledasetrans.cz a
-    erotickykontakt.cz. Domény, co už mají vlastní subdomenu (např.
-    de.dateefy.com, m.seitensprung.ag), zůstávají beze změny.
+    """"Bare" domains (just name.tld, e.g. erotickykontakt.cz) need a "www."
+    prefix on the actually working LP - verified manually on potrestajma.sk,
+    flirteouruguayo.com, mojemilfka.cz, zralalaska.cz, hledasetrans.cz and
+    erotickykontakt.cz. Domains that already have their own subdomain (e.g.
+    de.dateefy.com, m.seitensprung.ag) are left unchanged.
     """
     domain = domain.lower()
     if domain.startswith("www."):
@@ -98,32 +112,35 @@ def normalize_domain(domain: str) -> str:
 
 
 def domain_from_offer_title(title: str) -> str | None:
-    """Doména je jeden ze segmentů popisku offeru oddělených " - ", např.
-    "sexkontakt.com - GERMANY - ADULT - REV" -> "www.sexkontakt.com". Obvykle
-    je první, ale u testovacích offerů bývá před ní ještě prefix "TEST"
-    (např. "TEST - zralalaska.cz - SENIORS 50+ - ..."), takže se prochází
-    segmenty popořadě a vrací první, který vypadá jako doména.
+    """The domain is whichever segment of the offer title (split on " - ")
+    looks like a domain, e.g. "sexkontakt.com - GERMANY - ADULT - REV" ->
+    "www.sexkontakt.com". Usually that's the first segment, but test/cloned
+    offers sometimes have an extra descriptive prefix before the domain
+    (e.g. "TEST - minasdivinas.com - ADULT - ...") - so every segment is
+    checked and the first one that looks like a domain is used, instead of
+    hardcoding the first segment.
 
-    Ne všechny offery mají v titulku doménu - starší ("... RevShare old
-    System") mívají jen lidský název brandu (např. "Sexkontakt DE"). V tom
-    případě vrací None, aby to volající nezaměnil za platnou doménu.
+    Not every offer has a domain in its title - older ones ("... RevShare
+    old System") sometimes only have a human brand name (e.g. "Sexkontakt
+    DE"). In that case this returns None, so the caller doesn't mistake it
+    for a valid domain.
     """
-    # Některé tituly v offers.json mají před pomlčkou nedělitelnou mezeru
-    # (\xa0) místo normální - bez normalizace by split(" - ") selhal.
+    # Some titles have a non-breaking space (\xa0) before the dash instead
+    # of a normal one - without normalizing this, split(" - ") would fail.
     for segment in title.replace("\xa0", " ").split(" - "):
-        domain = re.sub(r"^https?://", "", segment.strip())
-        if looks_like_domain(domain):
-            return normalize_domain(domain)
+        candidate = re.sub(r"^https?://", "", segment.strip())
+        if looks_like_domain(candidate):
+            return normalize_domain(candidate)
     return None
 
 
 def niche_from_offer_title(title: str) -> str | None:
-    """Niche je první z NICHE_LP_NUMBERS, který se (case-insensitive) objeví
-    jako podřetězec v popisku offeru, např. "TEST - minasdivinas.com -
-    ADULT - CPL(DOI) / UY [Desktop/Mobile]" -> "ADULT", nebo "... -
-    SENIORS 50+ - ..." -> "SENIOR" (shoduje se jako podřetězec, i když
-    popisek má navíc "S 50+"). Vrací None, když se nenajde žádná shoda -
-    pak je potřeba niche zadat ručně přes --niche."""
+    """The niche is the first NICHE_LP_NUMBERS key that appears (case-
+    insensitive) as a substring of the offer title, e.g. "TEST -
+    minasdivinas.com - ADULT - CPL(DOI) / UY [Desktop/Mobile]" -> "ADULT",
+    or "... - SENIORS 50+ - ..." -> "SENIOR" (matches as a substring even
+    though the title has an extra "S 50+"). Returns None when nothing
+    matches - the niche then has to be given explicitly via --niche."""
     upper_title = title.upper()
     for niche in NICHE_LP_NUMBERS:
         if niche in upper_title:
@@ -131,43 +148,36 @@ def niche_from_offer_title(title: str) -> str | None:
     return None
 
 
-def get_offer_title(offer_id: str) -> str | None:
-    """Zkusí najít titulek offeru v data/offers.json (lokální cache appky).
-    Vrací None, pokud tam offer není - pak se doména musí dohledat v adminu.
-    """
-    if not OFFERS_JSON.exists():
-        return None
-    data = json.loads(OFFERS_JSON.read_text(encoding="utf-8"))
-    for offer in data.get("offers", []):
-        if str(offer.get("ofid")) == str(offer_id):
-            return offer.get("title")
-    return None
-
-
 def path_from_url(url: str) -> str:
-    """Vytáhne jen cestu z URL (bez domény, bez query stringu - ten se pak
-    doplňuje samostatně, ať už jde o ?afid=... na screenshot, nebo o šablonu
-    s placeholdery při zápisu zpět do administrace).
+    """Extracts just the path from a URL (no domain, no query string - that
+    gets appended separately, whether it's ?afid=... for the screenshot, or
+    the placeholder template written back into the admin).
     """
     return urlsplit(url.strip()).path
 
 
 def parse_lp_number(url_or_path: str) -> int | None:
-    """Vytáhne číslo LP z cesty tvaru /lp/{N}/{form}/{niche_id}/. Vrací None,
-    když vzor v hodnotě není (starší/cizí formát cesty - řádek se pak
-    nepřiřazuje k žádnému LP číslu a musí se přeskočit s varováním)."""
+    """Extracts the LP number from a path shaped like
+    /lp/{N}/{form}/{niche_id}/. Returns None when the pattern isn't present.
+
+    Not used to assign a row to an LP slot (that's parse_lp_number_from_title
+    below) - cloned rows carry over a foreign domain and possibly a foreign
+    LP number from the source offer in their URL, so matching by URL would
+    be unreliable. Kept as a building block."""
     match = _LP_NUMBER_RE.search(url_or_path)
     return int(match.group(1)) if match else None
 
 
 def parse_lp_number_from_title(title: str) -> int | None:
-    """Záchranný fallback pro parse_lp_number() - použije se JEN když se
-    číslo LP nepodaří vytáhnout z URL ani URL preview (např. URL preview je
-    jen "." - poškozený/rozbitý řádek). Titulek typu "LP02 - ADULT" je
-    slabší signál než URL (klidně může být zastaralý nebo překlepnutý), ale
-    lepší než řádek úplně přeskočit, když URL nedává žádné vodítko.
-
-    Nikdy nemá přednost před URL, jen ji doplňuje, když URL selže úplně."""
+    """Extracts the LP number from the Title field (shaped like "LP{N} -
+    {NICHE}", e.g. "LP01 - ADULT" or "LP11 - Adult" -> 11). Title is a more
+    reliable source of truth for "which LP slot this row belongs to" than
+    the URL/URL preview, because on cloned offers the URL points at a
+    foreign domain and possibly a foreign LP number inherited from the
+    source offer, while Title stays correct for the target slot. Returns
+    None when the title doesn't match the "LP<number>..." pattern (a
+    foreign/unknown title - the row is then skipped with a warning for
+    manual review)."""
     match = _TITLE_LP_NUMBER_RE.match(title.strip())
     return int(match.group(1)) if match else None
 
@@ -177,9 +187,9 @@ def build_lp_path(lp_number: int, niche_id: str) -> str:
 
 
 def build_title(lp_number: int, niche: str) -> str:
-    """LP čísla do 9 se do title dávají zarovnaná na dvě číslice (LP01, LP02,
-    ...), od 10 výš beze změny (LP10, LP17, LP20...). LP20 má napříč niche
-    navíc příponu "- Christmas"."""
+    """LP numbers below 10 get zero-padded to two digits in the title
+    (LP01, LP02, ...), 10 and up stay unchanged (LP10, LP17, LP20...). LP20
+    gets an extra "- Christmas" suffix, across every niche."""
     number = f"{lp_number:02d}" if lp_number < 10 else str(lp_number)
     suffix = " - Christmas" if lp_number == 20 else ""
     return f"LP{number} - {niche.upper()}{suffix}"

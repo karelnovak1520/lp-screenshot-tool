@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>{% block title %}LP preview tool{% endblock %}</title>
+<style>
+  body { font-family: -apple-system, Segoe UI, Arial, sans-serif; max-width: 780px; margin: 2rem auto; padding: 0 1rem; color: #222; background: #fff; }
+  h1 { font-size: 1.4rem; }
+  fieldset { border: 1px solid #ccc; border-radius: 6px; margin-bottom: 1.2rem; }
+  legend { font-weight: 600; padding: 0 0.4rem; }
+  label { display: block; margin-top: 0.6rem; font-size: 0.92rem; }
+  input[type=text], input[type=number], select {
+    width: 100%; padding: 0.4rem; margin-top: 0.2rem; box-sizing: border-box;
+    border: 1px solid #bbb; border-radius: 4px;
+  }
+  .row { display: flex; gap: 1rem; }
+  .row > div { flex: 1; }
+  .checkbox-row { display: flex; align-items: center; gap: 0.4rem; margin-top: 0.8rem; }
+  .checkbox-row input { width: auto; }
+  button { padding: 0.5rem 1.1rem; border-radius: 4px; border: 1px solid #888; background: #f2f2f2; cursor: pointer; }
+  button.primary { background: #2563eb; color: white; border-color: #2563eb; font-weight: 600; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  a.nav-link { display: inline-block; margin-bottom: 1rem; color: #2563eb; text-decoration: none; font-size: 0.9rem; }
+  a.nav-link:hover { text-decoration: underline; }
+  #log { background: #111; color: #d5f5d5; font-family: Consolas, monospace; font-size: 0.85rem;
+         padding: 0.8rem; border-radius: 6px; min-height: 200px; max-height: 420px; overflow-y: auto; white-space: pre-wrap; }
+  .platform-status { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem; font-size: 0.9rem; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  .dot.ok { background: #22c55e; }
+  .dot.no { background: #ef4444; }
+  .dot.wait { background: #f59e0b; }
+  details summary { cursor: pointer; font-weight: 600; margin: 0.6rem 0; }
+  .summary-box { margin-top: 0.8rem; padding: 0.6rem; border-radius: 6px; background: #f0f7ff; border: 1px solid #cfe0f5; }
+  #screenshots { display: flex; flex-wrap: wrap; gap: 0.8rem; }
+  .screenshot-card { width: 160px; text-align: center; font-size: 0.8rem; }
+  .screenshot-card img { width: 100%; border: 1px solid #ccc; border-radius: 4px; display: block; }
+  .screenshot-card span { display: block; margin-top: 0.2rem; font-weight: 600; }
+  #offline-banner { display:none; background:#fee2e2; border:1px solid #ef4444; color:#7f1d1d; padding:0.6rem 0.9rem; border-radius:6px; margin-bottom:1rem; }
+</style>
+</head>
+<body>
+
+<div id="offline-banner">
+  The app isn't responding - the server has probably crashed or isn't running. Close this window and re-launch the "LP tool" shortcut on your desktop.
+</div>
+
+{% block content %}{% endblock %}
+
+<script>
+const offlineBanner = document.getElementById("offline-banner");
+
+async function heartbeat() {
+  try {
+    const res = await fetch("/login-status");
+    if (res.ok) { offlineBanner.style.display = "none"; return true; }
+  } catch (err) { /* fall through */ }
+  offlineBanner.style.display = "block";
+  return false;
+}
+
+// Shared login-status widget: renders into `containerId`, scoped to the
+// given `platforms` dict (a subset of all platforms, e.g. just the two the
+// Tracking Link Generator uses). Used by /login, /tool, and /links so the
+// login logic only lives in one place.
+function createLoginWidget(containerId, platforms) {
+  const container = document.getElementById(containerId);
+
+  async function refresh() {
+    let statuses;
+    try {
+      const res = await fetch("/login-status");
+      statuses = await res.json();
+      offlineBanner.style.display = "none";
+    } catch (err) {
+      offlineBanner.style.display = "block";
+      return;
+    }
+    container.innerHTML = "";
+    for (const key of Object.keys(platforms)) {
+      const st = statuses[key];
+      const div = document.createElement("div");
+      div.className = "platform-status";
+      const dotClass = st.in_progress ? "wait" : (st.logged_in ? "ok" : "no");
+      const label = st.in_progress ? "waiting for login confirmation..." : (st.logged_in ? "logged in" : "not logged in");
+      div.innerHTML = `
+        <span class="dot ${dotClass}"></span>
+        <strong>${platforms[key].label}</strong> - ${label}
+        ${st.in_progress
+          ? `<button type="button" data-confirm="${key}">Done, save session</button>`
+          : `<button type="button" data-start="${key}">${st.logged_in ? "Log in again" : "Log in"}</button>`}
+      `;
+      container.appendChild(div);
+    }
+    container.querySelectorAll("[data-start]").forEach(btn => {
+      btn.onclick = async () => {
+        try {
+          await fetch("/login/start", {
+            method: "POST", headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({platform: btn.dataset.start})
+          });
+        } catch (err) { offlineBanner.style.display = "block"; return; }
+        refresh();
+      };
+    });
+    container.querySelectorAll("[data-confirm]").forEach(btn => {
+      btn.onclick = async () => {
+        try {
+          await fetch("/login/confirm", {
+            method: "POST", headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({platform: btn.dataset.confirm})
+          });
+        } catch (err) { offlineBanner.style.display = "block"; return; }
+        refresh();
+      };
+    });
+  }
+
+  refresh();
+  setInterval(refresh, 4000);
+  return { refresh };
+}
+</script>
+{% block scripts %}{% endblock %}
+
+</body>
+</html>

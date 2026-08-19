@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Internal tools{% endblock %}
+{% block content %}
+
+<h1>Internal tools</h1>
+<p>Two independent tools, sharing the same admin logins where relevant.</p>
+
+<div class="row" style="align-items: stretch; margin-top: 1.2rem;">
+  <div>
+    <fieldset style="height: 100%; box-sizing: border-box;">
+      <legend>LP Preview Tool</legend>
+      <p style="font-size: 0.9rem;">Creates, fixes, and pauses landing page screenshots/records for an offer, according to its niche's valid LP number set. Works with DaoOfLeads, ImaxCash, or OnlineDatingKings.</p>
+      <a class="nav-link" href="/tool">Open →</a>
+    </fieldset>
+  </div>
+  <div>
+    <fieldset style="height: 100%; box-sizing: border-box;">
+      <legend>Tracking Link Generator</legend>
+      <p style="font-size: 0.9rem;">Looks up an offer (by ID or name) and builds its affiliate tracking link. Uses a local offer list that refreshes automatically whenever you log in. Covers DaoOfLeads and 69cash only.</p>
+      <a class="nav-link" href="/links">Open →</a>
+    </fieldset>
+  </div>
+</div>
+
+<p style="margin-top: 1.5rem;"><a class="nav-link" href="/login">Manage logins for all platforms →</a></p>
+
+{% endblock %}

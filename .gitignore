@@ -1,6 +1,10 @@
 storage_state.json
+storage_state_*.json
+offers_cache.json
 screenshots/
 *.png
 .venv/
 __pycache__/
 *.pyc
+app.log
+.claude/
