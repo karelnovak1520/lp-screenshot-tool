@@ -1,0 +1,264 @@
+{% extends "base.html" %}
+{% block title %}Tracking Link tool - New affiliate{% endblock %}
+{% block content %}
+
+<h1>New affiliate</h1>
+<a class="nav-link" href="/">← Home</a>
+<a class="nav-link" href="/links">← Tracking Link tool</a>
+
+<p style="font-size: 0.85rem; color: #555;">DaoOfLeads only for now - builds the onboarding document sent to a brand-new affiliate (tracking links + postback/caps/fraud/billing/test-link boilerplate).</p>
+
+<fieldset>
+  <legend>Login status</legend>
+  <div id="platform-statuses"></div>
+</fieldset>
+
+<form id="new-affiliate-form">
+  <div id="step-1">
+    <fieldset>
+      <legend id="affid-legend" style="transition: color 0.2s;">1. Affiliate ID</legend>
+      <div style="display:flex; gap:0.6rem; align-items:flex-end;">
+        <label style="flex:1; margin-top:0;">Affiliate ID
+          <input type="text" name="aff_id" id="aff-id-input" value="{{ default_afid }}" required autocomplete="off">
+        </label>
+        <button type="button" id="lock-affid-btn">Confirm &amp; lock</button>
+      </div>
+      <p id="affid-locked-note" style="display:none; color:#166534; font-weight:600; font-size:0.85rem;">🔒 Locked - click "Unlock" if this needs to change.</p>
+    </fieldset>
+
+    <button type="button" class="primary" id="step1-next-btn">Next →</button>
+  </div>
+
+  <div id="step-2" style="display:none;">
+    <a class="nav-link" href="#" id="step2-back-btn">← Back</a>
+    <fieldset>
+      <legend>2. Postback</legend>
+      <label>Postback for this affiliate <span style="color:#888; font-weight:400;">(differs per affiliate - fills in section 2 of the document)</span>
+        <textarea name="postback" id="postback-input" rows="2" required style="width:100%; box-sizing:border-box; padding:0.4rem; font-family:inherit;" placeholder="e.g. the postback URL/value set up for this affiliate, or &quot;NOT SET YET&quot;"></textarea>
+      </label>
+    </fieldset>
+
+    <fieldset>
+      <legend>3. Fraud-report email</legend>
+      <label>Where DaoOfLeads sends this affiliate's fraud reports <span style="color:#888; font-weight:400;">(also differs per affiliate)</span>
+        <input type="email" name="fraud_email" id="fraud-email-input" required placeholder="e.g. someone@example.com">
+      </label>
+    </fieldset>
+
+    <button type="button" class="primary" id="step2-next-btn">Next →</button>
+  </div>
+
+  <div id="step-3" style="display:none;">
+    <a class="nav-link" href="#" id="step3-back-btn">← Back</a>
+    <fieldset>
+      <legend>4. Tracking link (example)</legend>
+      <label>Paste any real example link from this tracking platform (real numbers in it are fine) - the aff_id and offer_id values get replaced automatically per offer
+        <input type="text" name="template" placeholder="https://hubaffillink.eu/?aff_id=22513&offer_id=13923" required>
+      </label>
+    </fieldset>
+
+    <fieldset>
+      <legend>5. Offer ID(s)</legend>
+      <label>Type an offer ID, press Enter to add it, then type the next one
+        <input type="text" id="offer-id-input" placeholder="e.g. 13549" autocomplete="off">
+      </label>
+      <label style="margin-top: 1rem;">Selected</label>
+      <div id="selected-offer-ids" style="font-size: 0.9rem;">(none yet)</div>
+    </fieldset>
+
+    <button type="submit" class="primary" id="run-btn">Generate document</button>
+
+    <div id="doc-errors" style="display:none; background:#fef2f2; border:1px solid #ef4444; color:#7f1d1d; padding:0.6rem 0.9rem; border-radius:6px; margin-top:0.8rem; font-size:0.85rem;"></div>
+
+    <h3>Document</h3>
+    <div style="display:flex; gap:0.5rem; margin-bottom:0.4rem;">
+      <button type="button" id="clear-results-btn">Clear</button>
+    </div>
+    <div id="doc-results" style="background:#fafafa; border:1px solid #ddd; border-radius:6px; padding:1rem; font-size:0.92rem; line-height:1.5; white-space:pre-wrap; min-height:100px;">(nothing yet)</div>
+    <div style="display:flex; justify-content:flex-end; margin-top:0.4rem;">
+      <button type="button" id="copy-results-btn">Copy all</button>
+    </div>
+  </div>
+</form>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+createLoginWidget("platform-statuses", {{ platforms | tojson }});
+
+// --- Affiliate ID lock (step 1) ---
+const affIdInput = document.getElementById("aff-id-input");
+const lockAffidBtn = document.getElementById("lock-affid-btn");
+const affidLegend = document.getElementById("affid-legend");
+const affidLockedNote = document.getElementById("affid-locked-note");
+let affidLocked = false;
+
+function unlockAffId() {
+  affidLocked = false;
+  affIdInput.readOnly = false;
+  affIdInput.style.background = "";
+  affIdInput.style.borderColor = "";
+  affIdInput.style.fontWeight = "";
+  affidLegend.style.color = "";
+  affidLegend.textContent = "1. Affiliate ID";
+  lockAffidBtn.textContent = "Confirm & lock";
+  affidLockedNote.style.display = "none";
+}
+
+lockAffidBtn.addEventListener("click", () => {
+  if (!affidLocked) {
+    if (!affIdInput.value.trim()) { alert("Enter an affiliate ID first."); return; }
+    affidLocked = true;
+    affIdInput.readOnly = true;
+    affIdInput.style.background = "#fef9c3";
+    affIdInput.style.borderColor = "#ca8a04";
+    affIdInput.style.fontWeight = "700";
+    affidLegend.style.color = "#b45309";
+    affidLegend.textContent = `1. Affiliate ID — LOCKED: ${affIdInput.value.trim()}`;
+    lockAffidBtn.textContent = "Unlock";
+    affidLockedNote.style.display = "block";
+  } else {
+    unlockAffId();
+  }
+});
+
+// --- Step navigation ---
+const step1 = document.getElementById("step-1");
+const step2 = document.getElementById("step-2");
+const step3 = document.getElementById("step-3");
+
+document.getElementById("step1-next-btn").addEventListener("click", () => {
+  if (!affIdInput.value.trim()) { alert("Enter an affiliate ID first."); return; }
+  step1.style.display = "none";
+  step2.style.display = "block";
+});
+document.getElementById("step2-back-btn").addEventListener("click", (e) => {
+  e.preventDefault();
+  step2.style.display = "none";
+  step1.style.display = "block";
+});
+document.getElementById("step2-next-btn").addEventListener("click", () => {
+  if (!document.getElementById("postback-input").value.trim() || !document.getElementById("fraud-email-input").value.trim()) {
+    alert("Fill in the postback and the fraud-report email first.");
+    return;
+  }
+  step2.style.display = "none";
+  step3.style.display = "block";
+});
+document.getElementById("step3-back-btn").addEventListener("click", (e) => {
+  e.preventDefault();
+  step3.style.display = "none";
+  step2.style.display = "block";
+});
+
+// --- Offer ID(s) - type one, press Enter, add to the list ---
+const offerIdInput = document.getElementById("offer-id-input");
+const selectedEl = document.getElementById("selected-offer-ids");
+let selectedOfferIds = [];
+
+function renderSelectedOfferIds() {
+  if (selectedOfferIds.length === 0) {
+    selectedEl.textContent = "(none yet)";
+    return;
+  }
+  selectedEl.innerHTML = selectedOfferIds.map((id, i) => `
+    <div style="display:flex; justify-content:space-between; align-items:center; padding:0.2rem 0;">
+      <span>${id}</span>
+      <button type="button" data-remove="${i}" style="padding:0.1rem 0.5rem;">Remove</button>
+    </div>
+  `).join("");
+  selectedEl.querySelectorAll("[data-remove]").forEach(btn => {
+    btn.onclick = () => { selectedOfferIds.splice(Number(btn.dataset.remove), 1); renderSelectedOfferIds(); };
+  });
+}
+
+offerIdInput.addEventListener("keydown", (e) => {
+  if (e.key !== "Enter") return;
+  e.preventDefault();
+  const value = offerIdInput.value.trim();
+  if (!value) return;
+  if (!selectedOfferIds.includes(value)) {
+    selectedOfferIds.push(value);
+    renderSelectedOfferIds();
+  }
+  offerIdInput.value = "";
+  offerIdInput.focus();
+});
+
+function escapeHtml(s) {
+  return (s || "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
+// --- Generate + results (step 3) ---
+const form = document.getElementById("new-affiliate-form");
+const resultsEl = document.getElementById("doc-results");
+const errorsEl = document.getElementById("doc-errors");
+const runBtn = document.getElementById("run-btn");
+
+form.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  if (selectedOfferIds.length === 0) {
+    alert("Add at least one offer ID first.");
+    return;
+  }
+  runBtn.disabled = true;
+  runBtn.textContent = "Generating...";
+
+  const fd = new FormData(form);
+  try {
+    const res = await fetch("/links/new/run", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        aff_id: fd.get("aff_id"),
+        postback: fd.get("postback"),
+        fraud_email: fd.get("fraud_email"),
+        template: fd.get("template"),
+        offer_ids: selectedOfferIds.join(","),
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      resultsEl.textContent = "Error: " + data.error;
+      errorsEl.style.display = "none";
+    } else {
+      resultsEl.textContent = data.document;
+      if (data.errors && data.errors.length) {
+        errorsEl.innerHTML = "<strong>Not included in the document above:</strong><br>" +
+          data.errors.map(e => `${escapeHtml(e.offer_id)} - ${escapeHtml(e.error)}`).join("<br>");
+        errorsEl.style.display = "block";
+      } else {
+        errorsEl.style.display = "none";
+      }
+    }
+  } catch (err) {
+    offlineBanner.style.display = "block";
+  }
+
+  runBtn.disabled = false;
+  runBtn.textContent = "Generate document";
+});
+
+document.getElementById("clear-results-btn").addEventListener("click", () => {
+  resultsEl.textContent = "(nothing yet)";
+  errorsEl.style.display = "none";
+});
+
+document.getElementById("copy-results-btn").addEventListener("click", async () => {
+  const btn = document.getElementById("copy-results-btn");
+  const text = resultsEl.innerText.trim();
+  if (!text || text === "(nothing yet)") {
+    alert("Nothing to copy yet - generate the document first.");
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+    const original = btn.textContent;
+    btn.textContent = "Copied!";
+    setTimeout(() => { btn.textContent = original; }, 1500);
+  } catch (err) {
+    alert("Couldn't copy automatically - select the text manually instead.");
+  }
+});
+</script>
+{% endblock %}

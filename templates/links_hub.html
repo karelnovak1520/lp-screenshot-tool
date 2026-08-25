@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Tracking Link tool{% endblock %}
+{% block content %}
+
+<h1>Tracking Link tool</h1>
+<a class="nav-link" href="/">← Home</a>
+
+<div class="row" style="align-items: stretch; margin-top: 1.2rem;">
+  <div>
+    <fieldset style="height: 100%; box-sizing: border-box;">
+      <legend>Existing affiliate</legend>
+      <p style="font-size: 0.9rem;">Generate tracking links for offers on an affiliate ID you already have - pick a source, search offers by ID or name, and get one correct link per offer.</p>
+      <a class="nav-link" href="/links/existing">Open →</a>
+    </fieldset>
+  </div>
+  <div>
+    <fieldset style="height: 100%; box-sizing: border-box;">
+      <legend>New affiliate</legend>
+      <p style="font-size: 0.9rem;">Sets up a brand-new affiliate account before generating links for it.</p>
+      <a class="nav-link" href="/links/new">Open →</a>
+    </fieldset>
+  </div>
+</div>
+
+{% endblock %}

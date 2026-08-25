@@ -21,7 +21,7 @@ from flask import Flask, Response, jsonify, render_template, request, send_file
 
 from config import DEFAULT_AFID, DEFAULT_PLATFORM, DEFAULT_VIEWPORT, NICHE_LP_NUMBERS, PLATFORMS
 from lp_tool import ToolError, run_tool, storage_state_path
-from link_tool import LINK_FOOTER_NOTE, TRACKING_LINK_SUFFIX, generate_tracking_links
+from link_tool import LINK_FOOTER_NOTE, TRACKING_LINK_SUFFIX, build_new_affiliate_document, generate_tracking_links
 from offer_cache import PLATFORM_TO_SOURCE, load_cache, sync_platform
 from login import login_and_save
 
@@ -65,6 +65,11 @@ def tool_page():
 
 @app.route("/links")
 def links_page():
+    return render_template("links_hub.html")
+
+
+@app.route("/links/existing")
+def links_existing_page():
     # link_sources drives the "Source" search dropdown, keyed by the same
     # "dao" / "69cash" strings used in offers_cache.json - NOT the platform
     # keys (daoofleads / imaxcash) that the login widget below it uses.
@@ -73,13 +78,62 @@ def links_page():
         for platform, source in PLATFORM_TO_SOURCE.items()
     ]
     return render_template(
-        "links.html",
+        "links_existing.html",
         platforms=LINK_PLATFORMS,
         link_sources=link_sources,
         default_afid=DEFAULT_AFID,
         tracking_link_suffix=TRACKING_LINK_SUFFIX,
         link_footer_note=LINK_FOOTER_NOTE,
     )
+
+
+@app.route("/links/new")
+def links_new_page():
+    return render_template(
+        "links_new.html",
+        platforms={"daoofleads": PLATFORMS["daoofleads"]},
+        default_afid=DEFAULT_AFID,
+    )
+
+
+@app.route("/links/new/run", methods=["POST"])
+def links_new_run():
+    # DaoOfLeads only for now - that's the only platform this onboarding
+    # document exists for.
+    data = request.json
+    aff_id = (data.get("aff_id") or "").strip()
+    postback = (data.get("postback") or "").strip()
+    fraud_email = (data.get("fraud_email") or "").strip()
+    template = (data.get("template") or "").strip()
+    offer_ids_raw = (data.get("offer_ids") or "").strip()
+
+    if not aff_id:
+        return jsonify({"error": "Missing affiliate ID."}), 400
+    if not postback:
+        return jsonify({"error": "Missing postback."}), 400
+    if not fraud_email:
+        return jsonify({"error": "Missing fraud-report email."}), 400
+    if not template:
+        return jsonify({"error": "Missing URL template."}), 400
+    offer_ids = [o.strip() for o in offer_ids_raw.replace(",", "\n").splitlines() if o.strip()]
+    if not offer_ids:
+        return jsonify({"error": "Missing offer ID(s)."}), 400
+
+    try:
+        results = generate_tracking_links(
+            platform="daoofleads",
+            offer_ids=offer_ids,
+            aff_id=aff_id,
+            template=template,
+            headless=True,
+            log=lambda line: None,
+        )
+    except ToolError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    document = build_new_affiliate_document(results, postback, fraud_email)
+    errors = [{"offer_id": r["offer_id"], "error": r["error"]} for r in results if r["error"]]
+    return jsonify({"document": document, "errors": errors})
 
 
 @app.route("/links/offers")

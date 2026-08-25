@@ -9,6 +9,10 @@ placeholder template, or a real, already-filled-in example link (e.g. one
 copied from a previous generation) - normalize_template() finds whichever
 query params are literally named aff_id/offer_id and rewrites just their
 value to the placeholder form, so a real example works without editing.
+A bare platform URL with no query string at all (e.g.
+"https://hubaffillink.eu") also works - aff_id={aff_id}&offer_id={offer_id}
+gets appended automatically, since those are the network's standard
+param names and don't need a real example to be spelled out.
 The fixed tracking suffix (&ext_id={click_ID}&source={traffic_source_id})
 is then appended automatically - see TRACKING_LINK_SUFFIX.
 
@@ -51,6 +55,43 @@ LINK_FOOTER_NOTE = (
     "&ext_id={your parameter for click ID}"
 )
 
+# Fixed boilerplate for the DaoOfLeads new-affiliate onboarding document
+# (sections 2-6) - the parts that vary per affiliate are the postback value
+# (section 2) and the fraud-report email (section 4), both substituted in
+# via .format() below. DaoOfLeads-only for now; other platforms would need
+# their own version of this if/when that document exists for them.
+NEW_AFFILIATE_BOILERPLATE_DAO = """\
+------------------------------------------------------
+2) POSTBACK
+We set up the following global postback for all offers, the postback will fire only for the approved lead that will be paid.
+
+{postback}
+
+In our DAOofLEADS platform, we work with conversion(lead) statuses (Pending, Approved, Rejected)
+When the lead is created, it has status "PENDING", then our antifraud tool decides if the lead is fraud and mark it as "REJECTED", or if the lead is valid and mark it as "APPROVED".
+
+------------------------------------------------------
+3) CAPS
+The CAPs per offer is provided in the offer list you have received, please confirm with your affiliate manager the Monthly Budget that has been set for you.
+Notice that the detailed information about current CAP/Budget limits can be seen directly in your account:
+https://affiliate.daoofleads.com/en/offer/capping
+
+------------------------------------------------------
+4) FRAUD REPORTS
+As default, you will receive the fraud reports daily to the following email address:
+{fraud_email}
+You can see here all the details: https://affiliate.daoofleads.com/en/reports/fraud-list
+
+------------------------------------------------------
+5) BILLING SETTINGS
+Please fill up your missing billing information here: https://affiliate.daoofleads.com/en/account/edit
+
+------------------------------------------------------
+6) TEST LINK
+Please provide us with a test link to verify the conversions are properly set.
+"""
+
+
 # Countries whose tracking link format is completely different from the
 # normal {aff_id}/{offer_id} template - generating a normal-looking link for
 # them would be wrong, not just imprecise. Only enforced for offers found in
@@ -74,9 +115,20 @@ def normalize_template(template: str) -> str:
     correct {aff_id}/{offer_id} placeholder - and rewrites just that value
     to the placeholder form. Everything else in the link (domain, path,
     other params, casing) is left exactly as given, so this is safe to
-    call unconditionally before every generation."""
+    call unconditionally before every generation.
+
+    If either one is still missing afterward (e.g. a bare platform URL with
+    no query string at all, like "https://hubaffillink.eu") it's appended
+    directly, using the network's standard param names - the affiliate ID
+    and offer ID are already known from elsewhere in the flow, so a real
+    example link isn't required just to name them."""
     template = _PARAM_PATTERNS["aff_id"].sub("aff_id={aff_id}", template)
     template = _PARAM_PATTERNS["offer_id"].sub("offer_id={offer_id}", template)
+
+    missing = [ph for ph in ("aff_id={aff_id}", "offer_id={offer_id}") if f"{{{ph.split('=')[0]}}}" not in template]
+    if missing:
+        separator = "&" if "?" in template else "?"
+        template = template.rstrip("&?") + separator + "&".join(missing)
     return template
 
 
@@ -207,6 +259,31 @@ def generate_tracking_links(
                 browser.close()
 
     return [results[offer_id] for offer_id in offer_ids]
+
+
+def build_new_affiliate_document(results: list[dict], postback: str, fraud_email: str) -> str:
+    """Assembles the full DaoOfLeads new-affiliate onboarding document: a
+    "1) TRACKING LINKS" section built from already-generated tracking-link
+    results (same shape generate_tracking_links() returns), followed by the
+    fixed boilerplate sections - identical every time except the postback
+    value and the fraud-report email, which both differ per affiliate.
+
+    This document gets copied and sent to the affiliate as-is, so a failed
+    offer (wrong platform, not found, ...) is left out entirely rather than
+    written in as an error line - the caller is expected to surface those
+    separately (see links_new_run() in app.py) instead of forwarding them."""
+    lines = ["1)TRACKING LINKS", "TRACKING LINKS HERE:", ""]
+    for r in results:
+        if r["error"]:
+            continue
+        country_tag = f"{r['flag'] + ' ' if r.get('flag') else ''}{r['country'].upper()} - " if r.get("country") else ""
+        lines.append(f"{r['offer_id']} - {country_tag}{r['title']}")
+        lines.append(r["link"])
+        lines.append("")
+    lines.append("------------------------------------------------------")
+    lines.append(LINK_FOOTER_NOTE)
+    lines.append("")
+    return "\n".join(lines) + NEW_AFFILIATE_BOILERPLATE_DAO.format(postback=postback, fraud_email=fraud_email)
 
 
 def main() -> None:
