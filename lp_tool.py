@@ -65,6 +65,7 @@ from config import (
     build_title,
     domain_from_offer_title,
     niche_from_offer_title,
+    parse_lp_number_arg,
     parse_lp_number_from_title,
 )
 
@@ -399,8 +400,20 @@ def submit_inline_form(admin_page: Page, row: Locator, prefix: str) -> None:
     admin_page.wait_for_timeout(500)
 
 
+def _strip_www(url: str) -> str:
+    return url.rstrip("/").replace("://www.", "://", 1)
+
+
 def row_matches_expected(row: dict, expected_preview_url: str) -> bool:
-    return row["url_preview"].rstrip("/") == expected_preview_url.rstrip("/")
+    """A bare domain and its "www." form are the same page (see
+    normalize_domain() in config.py) - one just redirects to the other, so
+    a legacy row using whichever form still works and shouldn't be flagged
+    as a mismatch (and rewritten/re-screenshotted) just for that. Compared
+    with "www." stripped from both sides for that reason - an actually
+    different domain (e.g. a cloned row's foreign domain) still doesn't
+    match, since only the "www." prefix is normalized away, not the rest of
+    the domain."""
+    return _strip_www(row["url_preview"]) == _strip_www(expected_preview_url)
 
 
 def row_is_untouchable(status: str) -> bool:
@@ -421,7 +434,7 @@ def run_tool(
     width: int = DEFAULT_VIEWPORT["width"],
     height: int = DEFAULT_VIEWPORT["height"],
     domain: str | None = None,
-    only_lp: int | None = None,
+    only_lp: int | float | None = None,
     dry_run: bool = False,
     headless: bool = False,
     log=print,
@@ -648,7 +661,7 @@ def main() -> None:
     parser.add_argument("--width", type=int, default=DEFAULT_VIEWPORT["width"])
     parser.add_argument("--height", type=int, default=DEFAULT_VIEWPORT["height"])
     parser.add_argument("--domain", help="force the domain manually (skips deriving it from the offer title)")
-    parser.add_argument("--only-lp", type=int, help="process just one specific LP number, for testing")
+    parser.add_argument("--only-lp", type=parse_lp_number_arg, help="process just one specific LP number, for testing (decimal variants like 10.2 are fine)")
     parser.add_argument("--dry-run", action="store_true", help="only take screenshots and print the plan, don't upload/save anything to the admin")
     parser.add_argument("--headless", action="store_true", help="run the browser without a visible window")
     args = parser.parse_args()

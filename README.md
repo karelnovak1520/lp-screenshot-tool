@@ -275,9 +275,15 @@ surfacing as a generic 30-second locator timeout:
   (added|edited|created|inserted)` (case-insensitive) - if the admin
   reports something else, it fails loudly and `SUCCESS_TEXT_RE` in
   `lp_tool.py` needs updating.
-- `TRANS` niche_id and valid LP numbers (`10`, `17`) are confirmed from real
-  data (hledasetrans.cz). Other niches' valid LP sets come from the original
-  spec and haven't all been independently re-verified.
+- `TRANS` niche_id and valid LP numbers (`10`, `10.2`, `17`, `27`, `27.1`)
+  are confirmed from real data (hledasetrans.cz, tsseeker.com). Other
+  niches' valid LP sets come from the original spec and haven't all been
+  independently re-verified.
+- LP numbers are normally whole, but a niche can have decimal *variants* of
+  a slot (TRANS's `10.2` and `27.1` are the first ones) - these are kept as
+  `float` throughout (vs. plain `int` for whole numbers) and both types are
+  handled consistently everywhere an LP number is parsed, built, or
+  compared (`config.py`'s `_to_lp_number()`/`parse_lp_number_arg()`).
 - The Tracking Link Generator's offer cache and India-format safety check
   only cover DaoOfLeads and ImaxCash (`PLATFORM_TO_SOURCE` in
   `offer_cache.py`) - OnlineDatingKings isn't part of it.

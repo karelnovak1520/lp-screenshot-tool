@@ -27,14 +27,21 @@ DEFAULT_PLATFORM = "daoofleads"
 DEFAULT_AFID = "2792"
 DEFAULT_VIEWPORT = {"width": 1250, "height": 825}
 
-# Valid LP numbers and niche_id for each niche.
-NICHE_LP_NUMBERS: dict[str, list[int]] = {
+# Valid LP numbers and niche_id for each niche. Usually whole numbers, but a
+# niche can also have decimal variants of a slot (e.g. TRANS's 10.2 is a
+# variant of LP10, 27.1 a variant of the new LP27) - kept as float in that
+# case, plain int otherwise; parse_lp_number_from_title() and
+# parse_lp_number_arg() below both follow the same int-vs-float rule so a
+# row's title and a --only-lp/web "Single LP number" value compare equal to
+# these.
+NICHE_LP_NUMBERS: dict[str, list[int | float]] = {
     "ADULT": [1, 2, 3, 4, 5, 10, 15, 17, 20],
     "FLIRT": [1, 2, 4, 5, 9, 10, 15, 17, 20],
     "BDSM": [1, 2, 3, 4, 5, 9, 10, 15, 17],
     "MILF": [1, 2, 3, 4, 5, 9, 10, 17, 20],
     "SENIOR": [1, 2, 3, 5, 9, 10, 15, 17, 20],
-    "TRANS": [10, 17],
+    # 10.2, 27, 27.1 confirmed live on tsseeker.com (new LPs added 2026-08-25).
+    "TRANS": [10, 10.2, 17, 27, 27.1],
 }
 
 NICHE_IDS: dict[str, str | None] = {
@@ -87,8 +94,26 @@ DISMISS_FALLBACK_KEYWORDS = ["18", "adult", "yes", "entrar", "confirmo", "tengo"
 
 
 _DOMAIN_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$", re.IGNORECASE)
-_LP_NUMBER_RE = re.compile(r"/lp/(\d+)/")
-_TITLE_LP_NUMBER_RE = re.compile(r"^LP0*(\d+)", re.IGNORECASE)
+_LP_NUMBER_RE = re.compile(r"/lp/(\d+(?:\.\d+)?)/")
+_TITLE_LP_NUMBER_RE = re.compile(r"^LP0*(\d+(?:\.\d+)?)", re.IGNORECASE)
+
+
+def _to_lp_number(raw: str) -> int | float:
+    """Whole LP numbers stay int (matches the plain int entries already in
+    NICHE_LP_NUMBERS); a decimal variant (e.g. "10.2") becomes float. Shared
+    by every place an LP number gets parsed from text, so a row's title, a
+    URL, and a --only-lp/web "Single LP number" value all compare equal to
+    the values in NICHE_LP_NUMBERS regardless of which one produced them."""
+    return float(raw) if "." in raw else int(raw)
+
+
+def parse_lp_number_arg(value: str) -> int | float:
+    """Parses a user-supplied LP number (CLI --only-lp, or the web app's
+    "Single LP number" field) - same int-vs-float rule as
+    parse_lp_number_from_title() below, so it matches entries in
+    NICHE_LP_NUMBERS for niches with decimal LP variants (e.g. TRANS's
+    10.2, 27.1)."""
+    return _to_lp_number(str(value).strip())
 
 
 def looks_like_domain(value: str) -> bool:
@@ -156,7 +181,7 @@ def path_from_url(url: str) -> str:
     return urlsplit(url.strip()).path
 
 
-def parse_lp_number(url_or_path: str) -> int | None:
+def parse_lp_number(url_or_path: str) -> int | float | None:
     """Extracts the LP number from a path shaped like
     /lp/{N}/{form}/{niche_id}/. Returns None when the pattern isn't present.
 
@@ -165,32 +190,38 @@ def parse_lp_number(url_or_path: str) -> int | None:
     LP number from the source offer in their URL, so matching by URL would
     be unreliable. Kept as a building block."""
     match = _LP_NUMBER_RE.search(url_or_path)
-    return int(match.group(1)) if match else None
+    return _to_lp_number(match.group(1)) if match else None
 
 
-def parse_lp_number_from_title(title: str) -> int | None:
+def parse_lp_number_from_title(title: str) -> int | float | None:
     """Extracts the LP number from the Title field (shaped like "LP{N} -
-    {NICHE}", e.g. "LP01 - ADULT" or "LP11 - Adult" -> 11). Title is a more
-    reliable source of truth for "which LP slot this row belongs to" than
-    the URL/URL preview, because on cloned offers the URL points at a
-    foreign domain and possibly a foreign LP number inherited from the
-    source offer, while Title stays correct for the target slot. Returns
-    None when the title doesn't match the "LP<number>..." pattern (a
-    foreign/unknown title - the row is then skipped with a warning for
-    manual review)."""
+    {NICHE}", e.g. "LP01 - ADULT" or "LP11 - Adult" -> 11, or "LP10.2 -
+    TRANS" -> 10.2 for a decimal variant). Title is a more reliable source
+    of truth for "which LP slot this row belongs to" than the URL/URL
+    preview, because on cloned offers the URL points at a foreign domain
+    and possibly a foreign LP number inherited from the source offer, while
+    Title stays correct for the target slot. Returns None when the title
+    doesn't match the "LP<number>..." pattern (a foreign/unknown title -
+    the row is then skipped with a warning for manual review)."""
     match = _TITLE_LP_NUMBER_RE.match(title.strip())
-    return int(match.group(1)) if match else None
+    return _to_lp_number(match.group(1)) if match else None
 
 
-def build_lp_path(lp_number: int, niche_id: str) -> str:
+def build_lp_path(lp_number: int | float, niche_id: str) -> str:
     return f"/lp/{lp_number}/{LP_FORM_SEGMENT}/{niche_id}/"
 
 
-def build_title(lp_number: int, niche: str) -> str:
+def build_title(lp_number: int | float, niche: str) -> str:
     """LP numbers below 10 get zero-padded to two digits in the title
     (LP01, LP02, ...), 10 and up stay unchanged (LP10, LP17, LP20...). LP20
-    gets an extra "- Christmas" suffix, across every niche."""
-    number = f"{lp_number:02d}" if lp_number < 10 else str(lp_number)
+    gets an extra "- Christmas" suffix, across every niche. A decimal
+    variant (e.g. 10.2) only pads its whole-number part (e.g. "01.5" for a
+    hypothetical 1.5, unchanged for anything already >= 10)."""
+    if lp_number < 10:
+        whole, _, frac = str(lp_number).partition(".")
+        number = f"{int(whole):02d}" + (f".{frac}" if frac else "")
+    else:
+        number = str(lp_number)
     suffix = " - Christmas" if lp_number == 20 else ""
     return f"LP{number} - {niche.upper()}{suffix}"
 

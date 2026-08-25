@@ -19,7 +19,7 @@ import uuid
 
 from flask import Flask, Response, jsonify, render_template, request, send_file
 
-from config import DEFAULT_AFID, DEFAULT_PLATFORM, DEFAULT_VIEWPORT, NICHE_LP_NUMBERS, PLATFORMS
+from config import DEFAULT_AFID, DEFAULT_PLATFORM, DEFAULT_VIEWPORT, NICHE_LP_NUMBERS, PLATFORMS, parse_lp_number_arg
 from lp_tool import ToolError, run_tool, storage_state_path
 from link_tool import LINK_FOOTER_NOTE, TRACKING_LINK_SUFFIX, build_new_affiliate_document, generate_tracking_links
 from offer_cache import PLATFORM_TO_SOURCE, load_cache, sync_platform
@@ -272,7 +272,7 @@ def run():
             job["lines"].append(line)
             job["event"].set()
 
-    def on_screenshot(lp_number: int, path) -> None:
+    def on_screenshot(lp_number: int | float, path) -> None:
         with _jobs_lock:
             job = _jobs[job_id]
             job["screenshots"][lp_number] = str(path)
@@ -289,7 +289,7 @@ def run():
                 width=int(data.get("width") or DEFAULT_VIEWPORT["width"]),
                 height=int(data.get("height") or DEFAULT_VIEWPORT["height"]),
                 domain=(data.get("domain") or "").strip() or None,
-                only_lp=int(data["only_lp"]) if data.get("only_lp") else None,
+                only_lp=parse_lp_number_arg(data["only_lp"]) if data.get("only_lp") else None,
                 dry_run=bool(data.get("dry_run")),
                 headless=bool(data.get("headless")),
                 log=log,
@@ -350,11 +350,14 @@ def stream(job_id: str):
     return Response(generate(), mimetype="text/event-stream")
 
 
-@app.route("/screenshot/<job_id>/<int:lp_number>")
-def screenshot(job_id: str, lp_number: int):
+@app.route("/screenshot/<job_id>/<lp_number>")
+def screenshot(job_id: str, lp_number: str):
+    # Not <int:lp_number> - a decimal LP variant (e.g. "10.2") would never
+    # match that converter at all and 404 before this function even runs.
+    lp_key = parse_lp_number_arg(lp_number)
     with _jobs_lock:
         job = _jobs.get(job_id)
-        path = job["screenshots"].get(lp_number) if job else None
+        path = job["screenshots"].get(lp_key) if job else None
     if not path:
         return "", 404
     return send_file(path, mimetype="image/png")
