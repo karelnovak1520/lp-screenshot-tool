@@ -275,6 +275,15 @@ def screenshot_lp(browser, domain: str, path: str, afid: str, viewport: dict) ->
         # running - try to continue anyway
         pass
     dismiss_overlays(page)
+    # Clicking a button inside a cookie/age-gate overlay can leave the page
+    # scrolled - Playwright's click() scrolls the clicked element into view
+    # first, and some sites' own JS also shifts scroll position as part of
+    # closing the overlay (confirmed on szukajtrans.com: scrollY went from
+    # 0 to 297 after dismiss_overlays()). Without resetting it, the
+    # screenshot captures whatever now happens to be in view instead of the
+    # page's actual top, which looks like a completely different/wrong
+    # template even though it's the same page just scrolled down.
+    page.evaluate("window.scrollTo(0, 0)")
     page.wait_for_timeout(500)
     freeze_blinking_elements(page)
 
@@ -309,7 +318,7 @@ def get_landing_rows(admin_page: Page, admin_base: str, offer_id: str, platform:
     # filter inputs) - the label row needs to be found by CONTENT, not by
     # position, otherwise the columns shift relative to the real <td> in
     # each row (see README - "Known limitations").
-    required = ["id", "title", "url", "url preview", "status"]
+    required = ["id", "title", "preview", "url", "url preview", "status"]
     thead_rows = table.locator("thead tr")
     headers = None
     for r in range(thead_rows.count()):
@@ -339,6 +348,12 @@ def get_landing_rows(admin_page: Page, admin_base: str, offer_id: str, platform:
             {
                 "id": tds[col["id"]].strip(),
                 "title": tds[col["title"]].strip(),
+                # A row with a preview image has an empty cell here (just
+                # an <img>, no text) - "N/A" means the row exists but never
+                # got a screenshot uploaded (e.g. an older row created
+                # before this tool managed it), which needs the same fix
+                # as a wrong URL - see row_matches_expected()'s caller.
+                "has_preview": tds[col["preview"]].strip().upper() != "N/A",
                 "url": tds[col["url"]].strip(),
                 "url_preview": tds[col["url preview"]].strip(),
                 "status": tds[col["status"]].strip(),
@@ -554,10 +569,13 @@ def run_tool(
             label = f"LP{lp_number}"
             screenshot_path = None
             try:
-                if existing and row_matches_expected(existing, preview_url):
+                url_already_correct = existing and row_matches_expected(existing, preview_url)
+                if existing and existing["has_preview"] and url_already_correct:
                     log(f"[{label}] already matches ({preview_url}) - skipping")
                     skipped.append(lp_number)
                     continue
+                if url_already_correct and not existing["has_preview"]:
+                    log(f"[{label}] URL already correct but preview is missing (N/A) - adding screenshot")
 
                 action = "edit" if existing else "add"
                 dry_run_tag = "[DRY RUN] " if dry_run else ""

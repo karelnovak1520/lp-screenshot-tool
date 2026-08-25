@@ -74,6 +74,7 @@ AGE_GATE_BUTTON_TEXTS = [
     "Tengo 18 años o más",  # ES
     "Je mi 18 let nebo více",  # CS
     "Som starší ako 18 rokov",  # SK
+    "Mám 18 rokov alebo viac",  # SK (different LP template's own wording - webmaster_disclaimer_overlay)
     "I am 18 or older",  # EN
     "Ich bin 18 oder älter",  # DE
     "J'ai 18 ans ou plus",  # FR
