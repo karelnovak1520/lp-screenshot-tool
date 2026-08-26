@@ -162,15 +162,27 @@ def domain_from_offer_title(title: str) -> str | None:
 
 def niche_from_offer_title(title: str) -> str | None:
     """The niche is the first NICHE_LP_NUMBERS key that appears (case-
-    insensitive) as a substring of the offer title, e.g. "TEST -
-    minasdivinas.com - ADULT - CPL(DOI) / UY [Desktop/Mobile]" -> "ADULT",
-    or "... - SENIORS 50+ - ..." -> "SENIOR" (matches as a substring even
-    though the title has an extra "S 50+"). Returns None when nothing
-    matches - the niche then has to be given explicitly via --niche."""
-    upper_title = title.upper()
-    for niche in NICHE_LP_NUMBERS:
-        if niche in upper_title:
-            return niche
+    insensitive) as a substring of one of the title's " - "-separated
+    segments, e.g. "TEST - minasdivinas.com - ADULT - CPL(DOI) / UY
+    [Desktop/Mobile]" -> "ADULT", or "... - SENIORS 50+ - ..." -> "SENIOR"
+    (matches as a substring even though the segment has an extra "S 50+").
+    Returns None when nothing matches - the niche then has to be given
+    explicitly via --niche.
+
+    The domain segment is skipped (same segment domain_from_offer_title()
+    would pick) - domain names are often branded with a niche-like
+    substring that has nothing to do with the offer's actual niche (e.g.
+    "tsflirtdate.com" contains "FLIRT" even on a TRANS offer), so searching
+    the raw, undivided title would find a false match there before ever
+    reaching the real niche segment."""
+    for segment in title.replace("\xa0", " ").split(" - "):
+        candidate = re.sub(r"^https?://", "", segment.strip())
+        if looks_like_domain(candidate):
+            continue
+        upper_segment = segment.upper()
+        for niche in NICHE_LP_NUMBERS:
+            if niche in upper_segment:
+                return niche
     return None
 
 

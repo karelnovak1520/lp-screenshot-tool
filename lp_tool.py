@@ -195,7 +195,28 @@ def _dismiss_age_gate(page: Page) -> bool:
     banner - picking wrong here means leaving to an "I'm underage" page,
     not just a differently-worded banner (the "I'm underage" choice could
     easily have an id containing something like "no"/"deny" too), so
-    generic keyword detection wouldn't be safe here."""
+    generic keyword detection wouldn't be safe here.
+
+    One specific, known implementation (id="webmaster_disclaimer_overlay",
+    seen on multiple domains/languages - Slovak "Mám 18 rokov alebo viac",
+    German "Ich bin 18 Jahre alt oder älter", Polish "OK"/"Anuluj",
+    plausibly more) is handled separately, by known confirm-button
+    selectors scoped to that one container id, rather than by adding every
+    language's exact phrase to the list below - confirmed from each
+    variant's own inline script which button always means "confirm 18+"
+    regardless of its translated text, so this is targeting specific,
+    already-inspected implementations, not a generic id/class guess.
+    Different domains use different internal markup for the same overlay
+    (button#yes vs. a.btn.ok seen so far) - every known selector is tried."""
+    for selector in ("#webmaster_disclaimer_overlay button#yes", "#webmaster_disclaimer_overlay a.btn.ok"):
+        try:
+            btn = page.locator(selector)
+            if btn.count() > 0 and btn.first.is_visible():
+                btn.first.click(timeout=1500)
+                return True
+        except Exception:
+            continue
+
     clicked = False
     for text in AGE_GATE_BUTTON_TEXTS:
         try:
@@ -247,6 +268,26 @@ def dismiss_overlays(page: Page) -> None:
             continue
 
 
+def _overlay_still_visible(page: Page) -> bool:
+    """Checked right after dismiss_overlays() - if a cookie dialog or the
+    known webmaster_disclaimer_overlay age gate is still visible at this
+    point, every dismissal attempt failed and the screenshot is about to
+    capture it. Surfaced as a log warning by screenshot_lp()'s caller
+    instead of silently producing a screenshot with an overlay still in
+    it - a genuinely new/unhandled banner (a different phrase, a different
+    widget entirely) gets flagged immediately instead of only turning up
+    later by someone eyeballing the thumbnail."""
+    if _find_visible_cookie_dialog(page, timeout_ms=500) is not None:
+        return True
+    disclaimer = page.locator("#webmaster_disclaimer_overlay")
+    try:
+        if disclaimer.count() > 0 and disclaimer.first.is_visible():
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def freeze_blinking_elements(page: Page) -> None:
     """Some LPs (e.g. the dating-service.info template family) use a
     `.blink` CSS class on the registration/login button, animated via
@@ -263,7 +304,14 @@ def freeze_blinking_elements(page: Page) -> None:
         pass
 
 
-def screenshot_lp(browser, domain: str, path: str, afid: str, viewport: dict) -> Path:
+def screenshot_lp(browser, domain: str, path: str, afid: str, viewport: dict) -> tuple[Path, bool]:
+    """Returns (screenshot_path, overlay_left_visible) - the second value
+    is True when a cookie/age-gate overlay is still visible right before
+    the screenshot is taken, i.e. every dismissal attempt failed (see
+    _overlay_still_visible()). The caller logs a warning for that case
+    instead of this function failing outright - a botched screenshot is
+    still useful for review, and a single unrecognized banner on one LP
+    shouldn't stop the whole run."""
     url = f"https://{domain}{path}?afid={afid}"
 
     context = browser.new_context(viewport=viewport)
@@ -285,13 +333,14 @@ def screenshot_lp(browser, domain: str, path: str, afid: str, viewport: dict) ->
     # template even though it's the same page just scrolled down.
     page.evaluate("window.scrollTo(0, 0)")
     page.wait_for_timeout(500)
+    overlay_left = _overlay_still_visible(page)
     freeze_blinking_elements(page)
 
     SCREENSHOTS_DIR.mkdir(exist_ok=True)
     out_path = SCREENSHOTS_DIR / f"lp-screenshot-{uuid.uuid4().hex}.png"
     page.screenshot(path=str(out_path))
     context.close()
-    return out_path
+    return out_path, overlay_left
 
 
 def fetch_offer_title_from_admin(admin_page: Page, admin_base: str, offer_id: str, platform: str) -> str:
@@ -580,8 +629,10 @@ def run_tool(
                 action = "edit" if existing else "add"
                 dry_run_tag = "[DRY RUN] " if dry_run else ""
                 log(f"{dry_run_tag}[{label}] {action} -> {preview_url}")
-                screenshot_path = screenshot_lp(browser, domain, path, afid, viewport)
+                screenshot_path, overlay_left = screenshot_lp(browser, domain, path, afid, viewport)
                 log(f"  screenshot: {screenshot_path}")
+                if overlay_left:
+                    log(f"  WARNING: a cookie/age-gate overlay is still visible in this screenshot - check it manually ({preview_url})")
 
                 if dry_run:
                     if on_screenshot:
