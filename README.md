@@ -1,17 +1,27 @@
 # Affil Automation
 
-A local web app that automates two affiliate-admin chores that used to be
-done by hand, for three admin platforms: **DaoOfLeads**, **ImaxCash**, and
-**OnlineDatingKings**.
+## At a glance
 
-1. **LP preview tool** - given an offer ID, makes sure that offer's set of
-   landing-page preview rows in the admin matches what the niche requires:
-   creates missing rows, fixes stale ones, pauses the ones that don't
-   belong, and takes a clean screenshot of each affected page.
-2. **Tracking Link Generator** - given an affiliate ID, an example tracking
-   link, and a list of offer IDs, generates a correct tracking link per
-   offer (domain looked up automatically), with the network's required
-   click-ID/source parameters appended.
+**What it does** - two tools in one local app, for three affiliate admin
+platforms (**DaoOfLeads**, **ImaxCash**, **OnlineDatingKings**):
+
+- **LP Preview Tool** - for a given offer ID, fixes up its landing-page rows
+  in the admin to match what the niche requires (adds missing ones, fixes
+  stale ones, pauses ones that don't belong) and takes a clean screenshot of
+  each.
+- **Tracking Link Generator** - paste an example tracking link + a list of
+  offer IDs, get a correct tracking link back per offer, domain looked up
+  automatically.
+
+**How to use it** - double-click the **Affil Automation** shortcut on the
+Desktop. A browser opens at `http://127.0.0.1:5001` with a home page linking
+to both tools. First time, log in for whichever platform you need (see
+"Logging in" below) - everything after that is point-and-click in the
+browser.
+
+**What you need installed** - Windows or macOS, **Python 3.10+**, and a
+one-time setup that installs the dependencies + Playwright's bundled
+Chromium (~200 MB, see "Setup" below). Nothing else.
 
 Runs entirely on your own computer via a real, logged-in browser session -
 it has nothing to do with the Tracking Links app deployed on Vercel (that
