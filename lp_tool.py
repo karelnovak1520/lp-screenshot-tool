@@ -350,14 +350,26 @@ def fetch_offer_title_from_admin(admin_page: Page, admin_base: str, offer_id: st
     .navbar-brand link in the page's content header (scoped to
     section.content, since the top AdminLTE header has its own separate
     brand/logo link)."""
-    admin_page.goto(f"{admin_base}/en/admin/offer/edit/{offer_id}?locale=en", wait_until="networkidle")
+    try:
+        admin_page.goto(f"{admin_base}/en/admin/offer/edit/{offer_id}?locale=en", wait_until="domcontentloaded", timeout=30000)
+    except Exception:
+        # This admin panel can keep some background request running
+        # forever, so networkidle would never fire - domcontentloaded
+        # doesn't wait on that, it only needs the HTML itself to be
+        # parsed. Kept as a try/except anyway as a last-resort safety net;
+        # the locator call right below has its own generous wait for the
+        # actual content to render.
+        pass
     _check_admin_access(admin_page, platform, offer_id)
     return admin_page.locator("section.content nav.navbar a.navbar-brand strong").first.inner_text()
 
 
 def get_landing_rows(admin_page: Page, admin_base: str, offer_id: str, platform: str) -> list[dict]:
     grid_url = f"{admin_base}/en/admin/offer/edit/{offer_id}/landing?locale=en&landingGrid-perPage=200"
-    admin_page.goto(grid_url, wait_until="networkidle")
+    try:
+        admin_page.goto(grid_url, wait_until="domcontentloaded", timeout=30000)
+    except Exception:
+        pass
     _check_admin_access(admin_page, platform, offer_id)
 
     table = admin_page.locator("table").first
@@ -416,7 +428,12 @@ def open_inline_add(admin_page: Page) -> Locator:
     if add_link.count() == 0:
         raise RuntimeError("Add button (do=landingGrid-showInlineAdd) not found in the grid.")
     add_link.first.click()
-    admin_page.wait_for_load_state("networkidle")
+    try:
+        admin_page.wait_for_load_state("networkidle", timeout=5000)
+    except Exception:
+        # Same background-request issue as elsewhere in this file - the
+        # wait_for_selector call right below has its own proper wait.
+        pass
     admin_page.wait_for_selector('[name="inline_add[title]"]', timeout=10000)
     return admin_page.locator("tr").filter(has=admin_page.locator('[name="inline_add[title]"]')).first
 
@@ -428,7 +445,10 @@ def open_inline_edit(admin_page: Page, row_id: str) -> Locator:
     if edit_link.count() == 0:
         raise RuntimeError(f"Edit link for row {row_id} not found.")
     edit_link.first.click()
-    admin_page.wait_for_load_state("networkidle")
+    try:
+        admin_page.wait_for_load_state("networkidle", timeout=5000)
+    except Exception:
+        pass
     admin_page.wait_for_selector('[name="inline_edit[title]"]', timeout=10000)
     return admin_page.locator("tr").filter(has=admin_page.locator('[name="inline_edit[title]"]')).first
 
