@@ -16,6 +16,7 @@ import json
 import threading
 import time
 import uuid
+from pathlib import Path
 
 from flask import Flask, Response, jsonify, render_template, request, send_file
 
@@ -27,6 +28,13 @@ from login import login_and_save
 
 app = Flask(__name__)
 app.config["TEMPLATES_AUTO_RELOAD"] = True
+
+# A separate, self-contained Claude Artifact (domain -> SVG/PNG logo,
+# already built before this project existed) - served as a raw file rather
+# than through render_template(), since it's plain HTML/JS (not a Jinja
+# template) and Jinja would choke trying to parse any of its JS that
+# happens to contain {{ or {% -like sequences.
+LOGO_GENERATOR_PATH = Path(__file__).parent / "static_tools" / "logo_generator.html"
 
 # Only these two platforms feed the Tracking Link Generator - the TL app
 # has no concept of a third source, so OnlineDatingKings is left out of its
@@ -43,6 +51,11 @@ _logins: dict[str, dict] = {}
 @app.route("/")
 def home_page():
     return render_template("home.html")
+
+
+@app.route("/logo")
+def logo_generator_page():
+    return send_file(LOGO_GENERATOR_PATH)
 
 
 @app.route("/login")

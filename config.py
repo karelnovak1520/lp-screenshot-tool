@@ -25,7 +25,14 @@ PLATFORMS: dict[str, dict[str, str]] = {
 DEFAULT_PLATFORM = "daoofleads"
 
 DEFAULT_AFID = "2792"
-DEFAULT_VIEWPORT = {"width": 1250, "height": 825}
+# Some LP templates position the registration card as an absolute overlay
+# on top of the hero photo rather than side-by-side with it (e.g.
+# transkontakty.cz's LP17) - at the old, narrower 1250px the card's edge
+# landed right across the model's face. Confirmed clean (no overlap, on
+# every template tried) from 1600px wide - kept close to the old value
+# rather than jumping straight to a much wider resolution, since this
+# affects every future screenshot's file size too.
+DEFAULT_VIEWPORT = {"width": 1600, "height": 900}
 
 # Valid LP numbers and niche_id for each niche. Usually whole numbers, but a
 # niche can also have decimal variants of a slot (e.g. TRANS's 10.2 is a
