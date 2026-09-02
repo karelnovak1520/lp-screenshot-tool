@@ -13,6 +13,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 import uuid
@@ -210,10 +211,17 @@ def login_status():
     result = {}
     for key in PLATFORMS:
         with _login_lock:
-            in_progress = _logins.get(key, {}).get("in_progress", False)
+            entry = _logins.get(key, {})
+            in_progress = entry.get("in_progress", False)
+            error = entry.get("error")
         result[key] = {
             "logged_in": storage_state_path(key).exists(),
             "in_progress": in_progress,
+            # Set only once a login attempt has actually failed (the worker
+            # thread's exception) - cleared automatically the next time
+            # login_start() begins a fresh attempt for this platform, so a
+            # past failure doesn't linger after a later successful login.
+            "error": error,
         }
     return jsonify(result)
 
@@ -377,6 +385,12 @@ def screenshot(job_id: str, lp_number: str):
 
 
 if __name__ == "__main__":
+    # Written so the desktop launchers can kill exactly this process on
+    # their next run, instead of a `pkill -f app.py`-style pattern match -
+    # that generic pattern would kill any unrelated Python script anywhere
+    # on the machine that happens to share this common filename.
+    (Path(__file__).parent / ".app.pid").write_text(str(os.getpid()))
+
     # Not 5000 - on macOS that's squatted by the AirPlay Receiver
     # (ControlCenter), which silently answers instead of this app and
     # returns a 403 "Access to localhost was denied" page in the browser.

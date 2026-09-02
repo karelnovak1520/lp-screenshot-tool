@@ -89,6 +89,16 @@ function createLoginWidget(containerId, platforms) {
           ? `<button type="button" data-confirm="${key}">Done, save session</button>`
           : `<button type="button" data-start="${key}">${st.logged_in ? "Log in again" : "Log in"}</button>`}
       `;
+      if (st.error && !st.in_progress) {
+        // A failed login attempt used to just silently revert to
+        // "not logged in" with no indication why - the worker thread's
+        // exception is now sent through /login-status too, shown here via
+        // textContent (not innerHTML) so it's never treated as markup.
+        const errEl = document.createElement("div");
+        errEl.style.cssText = "color:#b91c1c; font-size:0.85rem; margin-top:0.2rem;";
+        errEl.textContent = "Login failed: " + st.error;
+        div.appendChild(errEl);
+      }
       container.appendChild(div);
     }
     container.querySelectorAll("[data-start]").forEach(btn => {

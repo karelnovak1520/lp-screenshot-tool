@@ -2,7 +2,7 @@
 
 ## At a glance
 
-**What it does** - two tools in one local app, for three affiliate admin
+**What it does** - three tools in one local app, for three affiliate admin
 platforms (**DaoOfLeads**, **ImaxCash**, **OnlineDatingKings**):
 
 - **LP Preview Tool** - for a given offer ID, fixes up its landing-page rows
@@ -12,10 +12,12 @@ platforms (**DaoOfLeads**, **ImaxCash**, **OnlineDatingKings**):
 - **Tracking Link Generator** - paste an example tracking link + a list of
   offer IDs, get a correct tracking link back per offer, domain looked up
   automatically.
+- **Logo Generator** - domain + niche in, a vector logo (SVG + PNG) out.
+  Fully self-contained, no login or network calls needed.
 
 **How to use it** - double-click the **Affil Automation** shortcut on the
 Desktop. A browser opens at `http://127.0.0.1:5001` with a home page linking
-to both tools. First time, log in for whichever platform you need (see
+to all three tools. First time, log in for whichever platform you need (see
 "Logging in" below) - everything after that is point-and-click in the
 browser.
 
@@ -56,7 +58,10 @@ playwright install chromium
 **macOS** - double-click `Start LP tool.command` on the Desktop (or wherever
 you put a shortcut to it). It kills any already-running copy first (so you
 never end up serving stale code after an update), starts the app in the
-background, and opens it in your browser automatically.
+background, and opens it in your browser automatically. The previous copy is
+found via its own PID, saved to `.app.pid` on startup - not a generic
+`pkill -f app.py`-style pattern match, which would risk killing an unrelated
+Python script elsewhere on your machine that happens to share that filename.
 
 **Windows** - double-click `Start LP tool.bat` - same behavior.
 
@@ -115,10 +120,17 @@ the automation doing its work, not a login flow. Always use the "Log in" /
   Generates one correct link per offer, with the network's required
   `&ext_id=...&source=...` suffix always appended. Offer lookups use a
   local cache first (instant) and fall back to a live admin lookup for
-  anything not cached yet. Results show each offer's country flag, flag
-  India offers with a safety overlay (their tracking format is completely
-  different and must be pulled manually), and include one-click "Clear
+  anything not cached yet - country (needed for the India check below) is
+  resolved from the offer title either way, cached or live. Results show
+  each offer's country flag, flag India offers with a safety overlay (their
+  tracking format is completely different and must be pulled manually - an
+  offer whose country can't be determined at all is treated the same as
+  India, rather than risking a wrong link), and include one-click "Clear
   results", "Start over", and "Copy all" actions.
+- **Logo Generator** (`/logo`) - a separate, fully self-contained tool (no
+  login, no network calls): domain + niche in, a vector logo out (SVG, PNG
+  900×150, PNG 420×72, or all three as a `.zip`). Colors come from a
+  per-niche preset (ADULT/EXPAT/MILF/SDADDY/SENIOR/SM/TRANS, or CUSTOM).
 - **Automatic offer cache** - every login for DaoOfLeads/ImaxCash pulls a
   fresh CSV export of that platform's offers and refreshes a local,
   gitignored cache (`offers_cache.json`), reporting what's new and what
@@ -129,7 +141,10 @@ the automation doing its work, not a login flow. Always use the "Log in" /
   offer ID that belongs to a different platform's admin account both used
   to show up as an opaque 30-second timeout; both now surface as a plain,
   actionable message (and, for the wrong-platform case, a pop-up warning
-  telling you to double-check the Platform dropdown).
+  telling you to double-check the Platform dropdown). A failed **login**
+  attempt (not just an expired one) also shows its actual error in the
+  "Login status" widget, instead of silently reverting to "not logged in"
+  with no explanation.
 - **`sync_offers.py`** - a separate, manual script (not run by the web app)
   that pushes the same CSV data into the *other*, publicly-deployed
   Tracking Links app's `data/offers.json`. Kept deliberately separate from
@@ -158,7 +173,7 @@ python lp_tool.py --platform daoofleads --offer-id 16689                    # wh
 | `--niche` | auto-detected from the offer title | the offer's niche; if given and it disagrees with the title, a warning is printed but the given value still wins |
 | `--niche-id` | based on `--niche` (config.py) | force niche_id manually, overrides the value from `config.py` |
 | `--afid` | `2792` | affiliate ID used in the URL when screenshotting |
-| `--width` / `--height` | `1250` / `825` | screenshot resolution |
+| `--width` / `--height` | `1600` / `900` | screenshot resolution |
 | `--domain` | (derived from the offer title) | force the domain manually, when derivation fails |
 | `--only-lp` | (the whole valid set) | process just one specific LP number, for testing |
 | `--dry-run` | off | screenshots and plan only, no writes to the admin (screenshots are kept in `screenshots/` for review instead of being deleted) |
@@ -188,10 +203,13 @@ For every LP number in the niche's valid set (`NICHE_LP_NUMBERS` in
    foreign LP number) from the source offer in their URL, while Title stays
    correct for the target slot.
 2. If the row doesn't exist → **Add** (new screenshot, new row, status `active`).
-3. If the row exists but its URL preview doesn't match the expected domain
-   and path → **Edit** (new screenshot, rewritten title/URL/URL preview,
-   status unchanged).
-4. If the row exists and already matches → nothing happens.
+3. If the row exists but its Title, URL preview, or status don't all match
+   what's expected (or the row's Preview cell shows `N/A` - never got a
+   screenshot uploaded) → **Edit** (new screenshot, rewritten title/URL/URL
+   preview, status forced to `active`).
+4. If the row exists, its Title and URL preview already match, it already
+   has a preview screenshot, and its status is already `active` → nothing
+   happens.
 
 After processing the valid set, every row in the grid is checked once more:
 any row whose LP number is **not** in the niche's valid set, and isn't
@@ -244,10 +262,18 @@ different consequences:
   option here means leaving to an "I'm underage" page instead of just a
   differently-styled banner, so guessing isn't safe. A new domain with an
   age-gate wording outside the list needs it added there (grab the exact
-  text from the page).
+  text from the page). One specific, recurring implementation
+  (`#webmaster_disclaimer_overlay`, seen on several domains/languages) is
+  instead handled by its own confirm-button selectors (`_dismiss_age_gate()`
+  in `lp_tool.py`) - those work regardless of the button's translated text,
+  so a new language of that same widget doesn't need a new list entry.
 - Last-resort fallback: `DISMISS_FALLBACK_KEYWORDS` in `config.py`, a small
   set of keywords (`"18"`, `"adult"`, ...) tried against clickable elements
   when nothing else matched.
+- **Safety net**: if a cookie/age-gate overlay is still visible right
+  before the screenshot is taken - this one or a genuinely new/unhandled
+  one - a `WARNING` is logged for that specific LP instead of silently
+  producing a screenshot with a banner still in it.
 
 ## Admin forms
 
@@ -302,7 +328,7 @@ surfacing as a generic 30-second locator timeout:
 
 | File | Purpose |
 |---|---|
-| `app.py` | Flask web app - all routes for both tools, login, and the offer cache endpoints |
+| `app.py` | Flask web app - all routes for all three tools, login, and the offer cache endpoints |
 | `lp_tool.py` | LP preview tool's core logic (also usable standalone via CLI) |
 | `link_tool.py` | Tracking Link Generator's core logic (also usable standalone via CLI) |
 | `login.py` | One-time/repeatable manual login flow, saves `storage_state_<platform>.json` |
@@ -310,5 +336,6 @@ surfacing as a generic 30-second locator timeout:
 | `offer_export.py` | Shared CSV-export fetching/parsing (used by both the local cache and `sync_offers.py`) |
 | `offer_cache.py` | The local, auto-refreshed offer cache behind the Tracking Link Generator's search |
 | `sync_offers.py` | Manual script - pushes offer data into the separate, publicly-deployed TL app |
+| `static_tools/logo_generator.html` | Logo Generator - a separate, self-contained tool, served as-is via `send_file()` |
 | `templates/` | The web app's pages (Home, Login, LP preview tool, Tracking Link Generator) |
 | `Start LP tool.command` / `.bat` | Desktop double-click launchers (macOS / Windows) |

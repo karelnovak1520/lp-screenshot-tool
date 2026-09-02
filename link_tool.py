@@ -34,9 +34,10 @@ import sys
 
 from playwright.sync_api import sync_playwright
 
-from config import DEFAULT_PLATFORM, PLATFORMS, domain_from_offer_title
+from config import DEFAULT_PLATFORM, PLATFORMS, domain_from_offer_title, looks_like_domain
 from lp_tool import ToolError, fetch_offer_title_from_admin, storage_state_path
 from offer_cache import PLATFORM_TO_SOURCE, load_cache
+from offer_export import COUNTRY_ISO, country_flag
 
 # Required by the affiliate network on every tracking link (see the
 # generator's own footer note) - {click_ID} and {traffic_source_id} are
@@ -165,6 +166,25 @@ def _cache_lookup(offer_id: str, source: str, cache: dict) -> dict | None:
     return None
 
 
+def _country_from_offer_title(title: str) -> str | None:
+    """A live-looked-up offer (not yet in the local cache, which is where
+    country normally comes from - see offer_export.py) can still be
+    checked against ATYPICAL_COUNTRIES without any extra admin scraping:
+    the title already carries the country as one of its " - "-separated
+    segments (e.g. "hledasetrans.cz - CZECHIA - TRANS - REV"), the same
+    segment shape niche_from_offer_title() in config.py already relies on.
+    Returns None when no segment matches a known country name - the India
+    check then can't confirm safety, and treats that the same as actually
+    being India (see generate_tracking_links())."""
+    for segment in title.replace("\xa0", " ").split(" - "):
+        candidate = re.sub(r"^https?://", "", segment.strip())
+        if looks_like_domain(candidate):
+            continue
+        if segment.strip().upper() in COUNTRY_ISO:
+            return segment.strip().upper()
+    return None
+
+
 def generate_tracking_links(
     *,
     platform: str,
@@ -242,11 +262,34 @@ def generate_tracking_links(
                     try:
                         title = fetch_offer_title_from_admin(admin_page, admin_base, offer_id, platform)
                         domain = domain_from_offer_title(title)
+                        country = _country_from_offer_title(title)
+                        if country is None or country in ATYPICAL_COUNTRIES:
+                            # Same fail-safe as the cached path's ATYPICAL_COUNTRIES
+                            # check, but stricter: an unresolvable country (title
+                            # didn't have a segment matching a known country name)
+                            # is treated the same as India rather than generated
+                            # anyway - a wrong link going out silently is worse
+                            # than one extra manual lookup.
+                            reason = country.title() if country else "unrecognized-country"
+                            results[offer_id] = {
+                                "offer_id": offer_id, "title": title, "domain": domain,
+                                "country": country, "flag": country_flag(country) if country else None,
+                                "link": None, "from_cache": False,
+                                "error": (
+                                    f"{reason} offer (live lookup) - can't confirm its tracking link format is "
+                                    "the standard one. Pull it manually from the affiliate account instead."
+                                    if country else
+                                    "Couldn't recognize this offer's country from its title (live lookup) - "
+                                    "can't confirm it isn't India (different tracking format). Pull it manually instead."
+                                ),
+                            }
+                            log(f"[{offer_id}] BLOCKED (live) - {reason}, needs a manual link")
+                            continue
                         link = build_tracking_link(template, aff_id, offer_id)
                         log(f"[{offer_id}] (live) {title} -> {link}")
                         results[offer_id] = {
                             "offer_id": offer_id, "title": title, "domain": domain,
-                            "country": None, "flag": None,
+                            "country": country, "flag": country_flag(country),
                             "link": link, "from_cache": False, "error": None,
                         }
                     except Exception as exc:

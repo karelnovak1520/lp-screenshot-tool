@@ -488,8 +488,13 @@ def _strip_www(url: str) -> str:
     return url.rstrip("/").replace("://www.", "://", 1)
 
 
-def row_matches_expected(row: dict, expected_preview_url: str) -> bool:
-    """A bare domain and its "www." form are the same page (see
+def row_matches_expected(row: dict, expected_title: str, expected_preview_url: str) -> bool:
+    """Compares both Title and URL preview - a row that already has the
+    right URL but a stale/wrong Title (e.g. inherited from a clone, or
+    hand-edited) used to be silently treated as "already correct" since
+    only url_preview was checked here.
+
+    A bare domain and its "www." form are the same page (see
     normalize_domain() in config.py) - one just redirects to the other, so
     a legacy row using whichever form still works and shouldn't be flagged
     as a mismatch (and rewritten/re-screenshotted) just for that. Compared
@@ -497,7 +502,10 @@ def row_matches_expected(row: dict, expected_preview_url: str) -> bool:
     different domain (e.g. a cloned row's foreign domain) still doesn't
     match, since only the "www." prefix is normalized away, not the rest of
     the domain."""
-    return _strip_www(row["url_preview"]) == _strip_www(expected_preview_url)
+    return (
+        row["title"].strip() == expected_title
+        and _strip_www(row["url_preview"]) == _strip_www(expected_preview_url)
+    )
 
 
 def row_is_untouchable(status: str) -> bool:
@@ -638,12 +646,15 @@ def run_tool(
             label = f"LP{lp_number}"
             screenshot_path = None
             try:
-                url_already_correct = existing and row_matches_expected(existing, preview_url)
-                if existing and existing["has_preview"] and url_already_correct:
+                content_matches = existing and row_matches_expected(existing, title, preview_url)
+                status_matches = existing and existing["status"].strip().lower() == "active"
+                if existing and existing["has_preview"] and content_matches and status_matches:
                     log(f"[{label}] already matches ({preview_url}) - skipping")
                     skipped.append(lp_number)
                     continue
-                if url_already_correct and not existing["has_preview"]:
+                if content_matches and existing["has_preview"] and not status_matches:
+                    log(f"[{label}] content correct but status is {existing['status']!r}, not active - fixing")
+                elif content_matches and not existing["has_preview"]:
                     log(f"[{label}] URL already correct but preview is missing (N/A) - adding screenshot")
 
                 action = "edit" if existing else "add"
@@ -674,7 +685,7 @@ def run_tool(
                     fill_inline_form(
                         row, "inline_edit",
                         title=title, preview_path=str(screenshot_path),
-                        url=full_url, url_preview=preview_url,
+                        url=full_url, url_preview=preview_url, status="active",
                     )
                     submit_inline_form(admin_page, row, "inline_edit")
                     updated.append(lp_number)

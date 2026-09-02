@@ -17,7 +17,18 @@ done
 DIR="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
 cd "$DIR"
 
-pkill -f "[a]pp\.py" 2>/dev/null
+# Kills only the exact process from the last run, tracked by PID in
+# .app.pid (app.py writes its own pid there on startup) - not a
+# `pkill -f app.py` pattern match, which would kill any unrelated Python
+# script anywhere on the system that happens to share that common filename.
+PID_FILE="$DIR/.app.pid"
+if [ -f "$PID_FILE" ]; then
+  OLD_PID="$(cat "$PID_FILE" 2>/dev/null)"
+  if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
+    kill "$OLD_PID" 2>/dev/null
+  fi
+  rm -f "$PID_FILE"
+fi
 sleep 1
 source .venv/bin/activate
 nohup python app.py > app.log 2>&1 &
